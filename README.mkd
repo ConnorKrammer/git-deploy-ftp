@@ -1,95 +1,136 @@
-git-deploy-php
-==============
+Git-Deploy
+==========
+Deploys a local git repository quickly and easily onto a remote server via FTP.
 
-Description
------------
+Git-deploy only requires FTP access, no SSH, so it will work even on the most restrictive of shared hosting plans. It supports both pushing and pulling, so if you already have something deployed it's simple to pull it down, put it under version control, and deploy it again! Even better, when pushing up to the server only changed files are uploaded. You save both bandwidth and time.
 
-git-deploy-php allows quick and easy deployments of Git repositories to FTP servers.
+And best of all, it's quick, simple, and user-friendly. You just have to know how to open up the command line.
 
-It was created to simplify the process of deploying projects to shared hosting environments where shell access is not available, and to save bandwidth, by only uploading the files that have changed.
+Usage:
+------
+Using git-deploy for the first time doesn't take a lot of work.
 
-Usage
------
+1. Drip `git-deploy into your project.
+2. Run `php git-deploy --setup`
+3. Fill in `deploy-config.ini` and execute `php git-deploy`.
 
-Using git-deploy-php could not be easier.
+Super simple.
 
-1. Drop `git-deploy` into your project.
-2. Create the `deploy.ini` file (see below).
-3. Execute `php git-deploy`.
+And if you want to update to the latest revision, just run `php git-deploy` once more. You're done!
 
-And there you go. It's that simple.
+__*Note that git-deploy will always operate with the current branch. Put in a feature request if you want the ability to specify branches other than the checked out one!*__
 
-### deploy.ini
+#### Configuration
+The configuration progess is pretty simple and the default config file walks you through it. The only thing to note is that if you have your project deployed already and want to upload a new revision, you'll either have to clean the remote location first and upload from scratch, or upload a file named `REVISION` containing the SHA-1 hash of the currently uploaded revision. There's a convenience command to do this for you: First your server in `deploy-config.ini`, then run `php git-deploy --make-revfile=<identifier>`. You'll be prompted for the revision to set, and it'll be automatically uploaded for you.
 
-In the root directory of your source code, create a `deploy.ini` file.
+If you don't know what revision the server is on (but you know how many commits back it is from HEAD), running `git rev-parse --short HEAD~<number of commits back>` will return the SHA-1 hash for that commit. More on that [here](http://git-scm.com/book/ch6-1.html).
 
-*Note: `deploy.ini` is the default file's name. You can name it `staging.ini`, for example, and execute `php git-deploy staging`. That serves as an easy way to separate the deployment to staging and production servers.*
+#### Ignoring Files
+After running `--setup` you'll notice a file called `.deployignore`. It works similarly to a `.gitignore` file, except that it excludes files from being uploaded (and it supports optional regex patters!). You'll find more information in the default file.
 
-    ; This is a sample deploy.ini file.
-    
-    [example]
-    
-    skip = false
-    user = example
-    pass = password
-    host = example.com
-    port = 21
-    path = /path/to/installation
-    passive = true
-    
-    ; If that seemed too long for you, you can specify servers like this:
-    [ftp://example:password@example.com:21/path/to/installation]
+Advanced Usage:
+---------------
 
-The first time it's executed, git-deploy will assume that your deployment server is empty, and will upload all the files in the git repository.
-If you've already deployed your project's files previously, you have to create a REVISION file on your deployment server, containing the hash of the revision it's currently in.
+Git-deploy has a lot of user-friendly functionality built in. Command line arguments don't take long, complicated inputs, and git-deploy strives to make sure you don't break anything unintentionally. That means that if you pass a dangerous argument, or two that don't make sense together, git-deploy will stop and ask you what to do. The last thing you want is your hard work accidentally deleted!
 
-To get the hash of the current revision, you can use:
+If you're afraid of wrecking something on your server, run git-deploy with the `--dry-run` flag turned on. Dry run mode won't run any commands that change files, but will still log output as if it were operating normally. This lets you know exactly what would change if you were to run that command without `--dry-run` turned on.
 
-    git rev-parse HEAD
+Other useful commands are available, such as `--clean`, `--only`, or `--list`. These are all documented below, and in the source code if you don't mind taking a look. (I'd recommend it -- everything is well documented!) There's even a command for updating git-deploy to the latest version from GitHub, hassle-free.
 
-Advanced Usage
---------------
+Git-deploy doesn't have to be called via `php git-deploy` either. You can safely rename the script and it will still operate correctly.
 
-### Revert a deployment
+Setup:
+------
+Git-deploy only has two requirements.
 
-If you deployed using git-deploy and you want to go back to the previous deployment, all you need is `--revert`:
+1. Git.
+2. PHP >= 5.3 available from the command line.
 
-    php git-deploy [your_ini_file_name] --revert
+Simply place git-deploy in the root directory of your git repository and run:
 
-If you use deploy.ini (i.e., if you didn't give the .ini file a custom name), then you can simply use:
+`$ php git-deploy --setup`
 
-    php git-deploy --revert
+This will create all needed files under the .deploy/ directory. Once that is complete, you can edit the deploy-config.ini file found inside with the appropriate values. The file is well-commented, so it shouldn't be too hard.
 
-### Deploy a specific commit
+If the configuration file is ever mangled or broken, removing it and re-running `--setup` will restore it to its default state. If git-deploy is run and no configuration file is found, the script will ask you to either create it yourself or to run --setup again.
 
-    php git-deploy [your_ini_file_name] -r [your_commit_hash]
+Command line:
+-------------
+#### Syntax
+The syntax isn't complicated.
 
-If you use deploy.ini (i.e., if you didn't give the .ini file a custom name), then you can simply use:
+    php git-deploy [<tree-ish>] [flags]
 
-    php git-deploy -r [your_commit_hash]
+It makes the most sense to specify the revision/tree argument first, but the order doesn't really matter. The short syntax form can be strung together like this:
 
-Note: If you want to, instead of using a commit hash, you can use a tag, or any other identifier that git-diff can understand.
+    php git-deploy HEAD~1 -csn --only testserver
 
-### List files to upload and delete
+...which will clean the upload directory of the server identified by 'testserver' (as configured in `deploy-config.ini`) without logging or printing output.
 
-Sometimes, you may just want to see what files are to be uploaded to the FTP server, and which ones are to be deleted. In this case, you can use `-l` (lowercase L):
+#### Flagless Arguments
 
-    php git-deploy [your_ini_file_name] -l
+`[<tree-ish>]`  
+Specify the revision to deploy. You can use any format recognizable by `git-diff` (hash, tag, etc). Defaults to HEAD of the current branch if not specified.  Note that files matching the following patterns will not be deployed for security reasons: `git-deploy*`, `.deploy/`, and a match for the script's curent name. (In case of rename.)
 
-If you use deploy.ini (i.e., if you didn't give the .ini file a custom name), then you can simply use:
+#### Commands
+`--setup`  
+Run setup.
 
-    php git-deploy -l
+`-c`  
+`--clean`  
+Completely clear out the upload directory.
 
-Pretty simple, huh?
+`-l`  
+`--list`  
+List files to upload or delete.
 
-How It Works
-------------
-git-deploy stores file called REVISION on your server inside the root path to your application. This file stores the current revision of your application residing on your server.
+`-p=<identifier>`  
+`--pull=<identifier>`  
+Pull contents down from the server specified with the given identifier into the directory of the git-deploy script. Useful for putting an existing deployment under version control for the first time. (Just run `--pull=<identifier>`, `git add -A`, `git commit` and you're done!) Certain files or directories are excluded from being pulled. These include anything that match the patterns `git-deploy*`, `.deploy/`, or `REVISION`. If the file is named the same as this script (in case you renamed it from git-deploy), it will not be pulled down either. (Pattern: `basename(__FILE__)*`)
+
+`-u`  
+`--update-self`  
+Fetch a newer copy of this script if it exists on GitHub and update to it. This script will keep its name, so even if it isn't named `git-deploy` this command (like all the others) will still work.
+
+-m=<identifier>
+--make-revfile=<identifier>
+Uploads a REVISION file to the server with the configured identifier. This is basically only useful for first-time setup, where you might already have code uploaded but without a REVISION file to identify the currently deployed revision to git-deploy. In that case you can run `--make-revfile` and pass the identifier of the server you want to upload the REVISION file to. You'll be prompted during upload for the revision hash/tag/etc. to set.
+
+
+#### Options
+`-s`  
+`--silent`  
+Silence command line output.
+
+`-n`  
+`--nolog`  
+Do not create a log file.
+
+`-d`  
+`--dry-run`  
+Run a command without changing local or remote files, but log results as if the command were actually being run.
+Overrides `--silent`, but not `--nolog`.
+
+`-r`  
+`--resume-only`  
+If a RESUME file exists for a given server, only resume the upload and do not continue with a new one.
+
+`-o=<identifier-list>`  
+`--only=<identifier-list>`  
+Only run git-deploy on the servers with the given identifiers in the config file. If more than one is specified, they should be enclosed in quote characters and space delineated.
+
+`-f`  
+`--show-filtered`  
+Show which files are excluded from upload, and by which exclude pattern. Useful for debugging the .deployignore file.
+
+How does it work?
+-----------------
+Git-deploy stores file called REVISION on your server inside the root path to your application. This file stores the current revision of your application residing on your server.
 
 When you run a git deploy, git-deploy downloads the REVISION file, and checks to see what files are different between revisions and either upload the changed files or deletes them from the server.
 
-Suggestions, questions and complaints.
-----------
+Suggestiongs, questions, and complaints.
+----------------------------------------
+#### [Create an issue!](https://github.com/ConnorKrammer/git-deploy-php/issues)
 
-If you've got any suggestions, questions, or anything you don't like about git-deploy-php, [create an issue](https://github.com/BrunoDeBarros/git-deploy-php/issues). I'd really appreciate your feedback.
-Feel free to fork this project, if you want to contribute to it. 
+Feel free to contribute! The source code is pretty clean and easy to get through, even if your PHP skills aren't that great. I've documented it slightly more than strictly necessary for exactly that reason -- so get cracking! No pull request is too small.

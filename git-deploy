@@ -1,107 +1,723 @@
 #!/usr/bin/php
 <?php
-/*
- * @todo log all output in file
- * @todo command to set file
- * @todo command to set whether to print or not
- * @todo command to ignore arbitrary files
- * @todo command to update to specific revision (including previous, see issue #8)
- * @todo see if it ends in .ini, and if it does, don't append .ini
+
+/**
+ * Git-deploy
+ * You can view this project on GitHub: https://github.com/ConnorKrammer/git-deploy-php
  */
 
-$commands = array('-l', '-r', '--revert');
 
-if (isset($argv[1])) {
-    if (!in_array($argv[1], $commands)) {
-        $deploy = $argv[1] . '.ini';
-    } else {
-        $deploy = 'deploy.ini';
-    }
-} else {
-    $deploy = 'deploy.ini';
+# Define useful defaults.
+define('UTILS_DIRECTORY', '.deploy/');                      # Utility directory.
+define('CONFIG_FILE', 'deploy-config.ini');                 # Config file.
+define('IGNORE_FILE', '.deployignore');                     # Ignore file.
+define('LOG_DIRECTORY', 'logs/');                           # Log directory.
+define('LOG_FILE_BASENAME', 'deploy-log-#.log');            # Log name.
+define('DEPLOYMENT_REVISION', 'HEAD');                      # Revision.
+define('REVISION_FILE', 'REVISION');                        # Remote revision file.
+define('LOCAL_REVISION_FILE_BASENAME', 'LOCAL_REVISION-');  # Local revision file.
+define('RESUME_FILE_BASENAME', 'RESUME-');                  # Resume file.
+
+# For updating. Change this if you're using git-deploy from a different fork.
+define('GITHUB_SOURCE_URL', "https://raw.github.com/ConnorKrammer/git-deploy-php/master/git-deploy");
+
+# Enable fnmatch flags on non-POSIX-compliant systems.
+if (!function_exists('fnmatch')) {
+    define('FNM_PATHNAME', 1);   # Slash in string only matches slash in the given pattern.
+    define('FNM_NOESCAPE', 2);   # Disable backslash escaping.
+    define('FNM_PERIOD', 4);     # Leading period in string must be exactly matched by period in the given pattern.
+    define('FNM_CASEFOLD', 16);  # Caseless match.
 }
 
-$opts = getopt("lr:", array("revert"));
+# This one is custom.
+define('FNM_DOUBLESTAR', 32);   # Allow matching of slashes with wildcard **. Only useful with FNM_PATHNAME.
+define('FNM_ALLOWSPACES', 64);  # Allow matching of spaces.
 
-$list = isset($opts['l']);
-$revision = isset($opts['r']) ? $opts['r'] : 'HEAD';
+# Define a more semantic exit exception.
+# Used for purposefully ending app.
+class ExitApp extends Exception {}
 
-$revert = isset($opts['revert']);
+# Parse command line arguments.
+$options = parseArgs();
+
+# Define variables based on command line input.
+$config       = CONFIG_FILE;
+$ignore       = IGNORE_FILE;
+$revision     = $options[0] ?: DEPLOYMENT_REVISION;
+$setup        = isset($options['setup']);                                         # --setup
+$clean        = isset($options['c']) || isset($options['clean']);                 # --clean
+$list         = isset($options['l']) || isset($options['list']);                  # --list
+$silent       = isset($options['s']) || isset($options['silent']) || $dryrun;     # --silent
+$nolog        = isset($options['n']) || isset($options['nolog']);                 # --nolog
+$dryrun       = isset($options['d']) || isset($options['dry-run']);               # --dry-run
+$resumeOnly   = isset($options['r']) || isset($options['resume-only']);           # --resume-only
+$restrictList = $options['o'] ?: $options['only'] ?: NULL;                        # --only
+$pull         = $options['p'] ?: $options['pull'] ?: NULL;                        # --pull
+$showFiltered = isset($options['f']) || isset($options['show-filtered']);         # --show-filtered
+$update       = isset($options['u']) || isset($options['update-self']);           # --update-self
+$makeRevFile  = $options['m'] ?: $options['make-revfile'] ?: NULL;                # --make-revfile
+
+if ($restrictList) $restrictList = explode(' ', $restrictList);
+if ($makeRevFile)  $restrictList = array($makeRevFile);
+
+# Make sure to add a command to this list.
+# If a command given isn't on this list, throw an error.
+$commands = array(
+  'c',
+  'l',
+  's',
+  'n',
+  'd',
+  'r',
+  'o',
+  'p',
+  'f',
+  'u',
+  'm',
+  'setup',
+  'clean',
+  'list',
+  'silent',
+  'nolog',
+  'dry-run',
+  'resume-only',
+  'only',
+  'pull',
+  'show-filtered',
+  'update-self',
+  'make-revfile',
+);
+
+foreach ($commands as $command) unset($options[$command]);
+if ($options[0] == $revision) unset($options[0]);
+
+if (count($options) > 0) {
+    foreach ($options as $key => $unrecognized) {
+        if (!is_numeric($key)) {
+            $key = strlen($key) == 1 ? '-' . $key : '--' . $key;
+        } else {
+          $key = $unrecognized;
+        }
+
+        echo("\nUnrecognized argument passed to git-deploy: $key");
+    }
+
+    echo("\nExiting.\n");
+    exit;
+}
+
+if ($pull && $clean) {
+  echo("\nYou've turned on both the --pull and --clean flags at once! Are you sure you want to do that?");
+  echo("\nIf you want to pull from the server, you probably don't want to clean it first. Pull first, then clean.");
+  echo("\nExiting.\n");
+  exit;
+}
 
 try {
-    $git = new Terra_Git();
-    if (!$list) {
-        $git->setDeployFile($deploy);
-        if ($revert) {
-            $git->revert();
-        } else {
-            $git->deploy($revision);
-        }
-    } else {
-        $files = $git->getFilesToUpload();
-        if (count($files['upload']) > 0) {
-            $git->output("Files to upload:");
-            foreach ($files['upload'] as $fileToUpload) {
-                $git->output($fileToUpload);
-            }
-        }
+    $git = new Terra_Git(!$silent, !$nolog, $setup, $showFiltered, $dryrun);
 
-        if (count($files['delete']) > 0) {
-            $git->output("Files to delete:");
-            foreach ($files['delete'] as $fileToDelete) {
-                $git->output($fileToDelete);
-            }
-        }
+    if ($update) {
+        $git->updateSelf();
+        throw new ExitApp("Update successfully completed!");
     }
+
+    if (!cmd_exists("git")) {
+        throw new ExitApp("Git doesn't seem to be available. Try adding it to your system PATH.");
+    }
+    
+    if ($setup) {
+        $git->setup();
+        throw new ExitApp("Setup complete.");
+    }
+
+    $git->setConfigFile($restrictList);
+    $git->setIgnoreFile();
+
+    if ($list)                     $git->printAllStatuses($revision);
+    else if ($clean)               $git->cleanAll();
+    else if (!empty($pull))        $git->pull($pull);
+    else if (!empty($makeRevFile)) $git->setRemoteRevisionFile($makeRevFile);
+    else                           $git->deployAll($revision, $resumeOnly);
+
+} catch (ExitApp $ea) {
+    $git->output($ea->getMessage(), 2);
+    $git->output("Execution ended." . PHP_EOL, 2);
 } catch (Exception $e) {
-    echo $e->getMessage();
+    $git->output("\n\nWhoa, Nelly! We've got ourselves an unexpected exception!", 2);
+    $git->output("We're terminating execution. Here's the exception message:");
+    $message = empty($e->getMessage()) ? "No message given. Well, that was helpful." : $e->getMessage();
+    $git->output($message . PHP_EOL);
+}
+
+/**
+* parseArgs Command Line Interface (CLI) utility function.
+* @author Patrick Fisher <patrick@pwfisher.com>
+* @see https://github.com/pwfisher/CommandLine.php
+*/
+function parseArgs($argv = null) {
+    $argv = $argv ? $argv : $_SERVER['argv']; array_shift($argv); $o = array();
+    for ($i = 0, $j = count($argv); $i < $j; $i++) { $a = $argv[$i];
+        if (substr($a, 0, 2) == '--') { $eq = strpos($a, '=');
+            if ($eq !== false) { $o[substr($a, 2, $eq - 2)] = substr($a, $eq + 1); }
+            else { $k = substr($a, 2);
+                if ($i + 1 < $j && $argv[$i + 1][0] !== '-') { $o[$k] = $argv[$i + 1]; $i++; }
+                else if (!isset($o[$k])) { $o[$k] = true; } } }
+        else if (substr($a, 0, 1) == '-') {
+            if (substr($a, 2, 1) == '=') { $o[substr($a, 1, 1)] = substr($a, 3); }
+            else {
+                foreach (str_split(substr($a, 1)) as $k) { if (!isset($o[$k])) { $o[$k] = true; } }
+                if ($i + 1 < $j && $argv[$i + 1][0] !== '-') { $o[$k] = $argv[$i + 1]; $i++; } } }
+        else { $o[] = $a; } }
+    return $o;
+}
+
+/**
+ * Checks if a given command is available on the command line.
+ *
+ * Parses the 'which' command to check if a command is available. If
+ * the os is Windows and the which command is unavailable, the 'where'
+ * command is used instead.
+ *
+ * @see http://stackoverflow.com/a/15475417/1270419
+ *
+ * @param string command  The command to check for.
+ * @return bool           True if the command is available, else false.
+ */
+function cmd_exists($command)
+{
+    # Check if command exists by parsing where and which commands.
+    # Make sure that errors go to standard output, not standard error. (The 2>&1 bit.)
+    if (\strtolower(\substr(PHP_OS, 0, 3)) === 'win') {
+        $fp = \popen("where $command 2>&1", "r");
+        $result = \fgets($fp, 255);
+        $exists = ! \preg_match('#Could not find files#', $result);
+        \pclose($fp);   
+    } else {
+        $fp = \popen("which $command 2>&1", "r");
+        $result = \fgets($fp, 255);
+        $exists = ! empty($result);
+        \pclose($fp);
+    }
+
+    return $exists;
+}
+
+/**
+ * Formats the specified number of seconds as text.
+ *
+ * The format that will be returned is of the form
+ * "x hours, x minutes, x seconds". Minutes will only be included if
+ * seconds >= 60, and hours will only be included if seconds >= 3600.
+ * All words will be correctly pluralized if necessary.
+ *
+ * @param int seconds  The number of seconds.
+ * @return string      A formatted string.
+ */
+function secondsToWords($seconds)
+{
+    $hours = intval(intval($seconds) / 3600);
+    $minutes = bcmod((intval($seconds) / 60), 60);
+    $seconds = bcmod(intval($seconds), 60);
+    $words = "";
+
+    if ($hours > 0) {
+        $words .= pluralize($hours, "$hours hour, ", "$hours hours, ");
+    }
+
+    if ($hours > 0 || $minutes > 0) {
+        $words .= pluralize($minutes, "$minutes minute, ", "$minutes minutes, ");
+    }
+  
+    $words .= pluralize($seconds, "$seconds second", "$seconds seconds");
+
+    return $words;
+}
+   
+/**
+ * fnmatch() for non-POSIX-compliant systems. Not comprehensively tested.
+ *
+ * @see http://ca3.php.net/manual/en/function.fnmatch.php#100207
+ *
+ * @param string pattern  The pattern to use for matching.
+ * @param string string   The string to match against.
+ * @param int flags       Optional flags to alter operation.
+ * @return bool           True if the given string matched.
+ */
+function pcre_fnmatch($pattern, $string, $flags = 0)
+{
+    $modifiers = null;
+    $transforms = array(
+        '\*'    => '.*',
+        '\?'    => '.',
+        '\[\!'    => '[^',
+        '\['    => '[',
+        '\]'    => ']',
+        '\.'    => '\.',
+    );
+   
+    // Forward slash in string must be in pattern:
+    if ($flags & FNM_PATHNAME) {
+        $transforms['\*'] = '[^/]*';
+    }
+   
+    // Back slash should not be escaped:
+    if ($flags & FNM_NOESCAPE) {
+        unset($transforms['\\']);
+    }
+   
+    // Perform case insensitive match:
+    if ($flags & FNM_CASEFOLD) {
+        $modifiers .= 'i';
+    }
+   
+    // Period at start must be the same as pattern:
+    if ($flags & FNM_PERIOD) {
+        if (strpos($string, '.') == 0 && strpos($pattern, '.') !== 0) return false;
+    }
+
+    // Match slashes with ** even if FNM_PATHNAME is on:
+    if ($flags & FNM_DOUBLESTAR) {
+        $transforms['\*\*'] = '.*';
+    }
+
+    // Allow excaping spaces:
+    if ($flags & FNM_ALLOWSPACES) {
+        $transforms[' '] = '\ ';
+    }
+   
+    # Escape all regex-related characters, then transform the relevant ones back.
+    $pattern = '#^'
+        . strtr(preg_quote($pattern, '#'), $transforms)
+        . '$#'
+        . $modifiers;
+   
+    return (boolean)preg_match($pattern, $string);
+} 
+
+/**
+ * Returns a pluralized form of a word.
+ *
+ * Singular is defined as being equal to one. This doesn't localize
+ * well, but this script is English-only at the moment. The gettext
+ * extension would be appropriate, but overkill.
+ *
+ * @param int count        The number to pluralize with.
+ * @param string singular  The singular form of the word.
+ * @param string plural    The plural form of the word.
+ * @return string          $singular if $count == 1, else $plural.
+ */
+function pluralize($count, $singular, $plural) {
+    return $count == 1 ? $singular : $plural;
 }
 
 class Terra_Git {
 
-    protected $filesToIgnore = array(
-        'git-deploy',
-        '.gitignore',
-    );
+    /**
+     * The start time of deployment.
+     *
+     * Used for informational purposes and to uniquely
+     * identify the log file.
+     */
+    protected $startTime;
+
+    /**
+     * Whether to print output to the command line or not.
+     */
     protected $print = true;
-    protected $logBuffer = '';
-    protected $logFile = 'git-deploy.log.txt';
-    protected $submodules = array();
-    protected $servers = array();
 
-    function __construct() {
-        # Check if there are any submodules in the git repository.
+    /**
+     * Whether to record output in a log file or not.
+     */
+    protected $log = true;
 
-        $command = "git submodule status";
+    /**
+     * A buffer to temporarily hold log output.
+     * @see $this->output()
+     */
+    protected $logBuffer = "";
 
-        $output = array();
-        exec($command, $output);
+    /**
+     * Whether to send log data to the log buffer or not. Does not affect console output.
+     * @see $this->output()
+     */
+    protected $logToBuffer = false;
 
-        foreach ($output as $line) {
-            $line = explode(' ', $line);
-            $this->submodules[] = $line[1];
-        }
-    }
+    /**
+     * Allows disabling output without changing the values of $print or $log.
+     * @see $this->output()
+     */
+    protected $disableOutput = false;
 
-    function setDeployFile($deploy) {
-        if (!@file_exists($deploy)) {
-            throw new Exception("File '$deploy' does not exist.");
-        } else {
-            $servers = parse_ini_file($deploy, true);
-            if (!$servers) {
-                throw new Exception("File '$deploy' is not a valid .ini file.");
-            } else {
-                $this->addServers($servers);
+    /**
+     * Whether to show filtered files when parsing the ignore file.
+     */
+    protected $showFiltered = false;
+
+    /**
+     * The path to the log file.
+     * NOTE: Currently there is no way to specify the log file's name.
+     */
+    protected $logFile;
+
+    /**
+     * The path to the config file.
+     */
+    protected $configFile;
+
+    /**
+     * The path to the ignore file.
+     */
+    protected $ignoreFile;
+
+    /**
+     * The servers to upload to.
+     *
+     * These are specified in the configuration file,
+     * which defaults to deploy-config.ini under the .deploy folder.
+     *
+     * @see $this->setDeployFile() for details.
+     */
+    protected $serverList = array();
+
+    /**
+     * Whether to operate in dry run mode.
+     * When in dry run mode, no files are changed on the FTP server,
+     * but all logs are recorded as if they are. This is useful for
+     * seeing what effect a given command would actually have.
+     */
+    protected $dryrun = false;
+
+    /**
+     * Terra_Git constructor.
+     *
+     * Check for submodules and save them into an array.
+     * Then create the .deploy/ directory, if needed. and the log file
+     * for this session. 
+     *
+     * @param bool print     Whether to print output to the command line.
+     * @param bool log       Whether to record output in a log file.
+     * @param bool setup     Whether this setup is going to be run.
+     * @param bool dryrun    Whether all commands are to be executed in dry run mode.
+     */
+    function __construct($print = true, $log = true, $setup = false, $showFiltered = false, $dryrun = false)
+    {
+        $this->log = $log;
+        $this->print = $print;
+        $this->startTime = time();
+        $this->logFile = $this->getLogFilePath($this->startTime);
+        $this->showFiltered = $showFiltered;
+        $this->dryrun = $dryrun;
+
+        if (!$setup) {
+            $this->output("----------------------------------------", 2);
+            $this->output("[Starting new deploy.]");
+            if ($dryrun) $this->output("Dry-run mode: ON");
+            $this->output("Configuration file: " . $this->getConfigFilePath(CONFIG_FILE));
+            $this->output("Ignore file: " . $this->getIgnoreFilePath(IGNORE_FILE));
+            $this->output("Log file: {$this->logFile}");
+            $this->output("----------------------------------------");
+
+            if ($dryrun) {
+              $this->output("#### NOTE ####", 2);
+              $this->output("Git-deploy is running with the option --dry-run turned on. No changes will be made, but you");
+              $this->output("will be able to view the output as if they were taking place. Running --dry-run overrides");
+              $this->output("--silent, but not --nolog, so if the --nolog flag is set, no log files will be created.");
+
             }
         }
-        $this->ignoreFile($deploy);
     }
 
-    function addServers($servers) {
-        foreach ($servers as $uri => $options) {
+    function __destruct() { }
 
-            if (substr($uri, 0, 6) === 'ftp://') {
-                $options = array_merge($options, parse_url($uri));
+    /**
+     * Sets up git-deploy.
+     *
+     * Creates the utility directory, the log directory, the default
+     * config file, and the default ignore file. It will not create
+     * one of the above if it already exists. This function is run
+     * when calling git-deploy with the option --setup.
+     */
+    public function setup()
+    {
+        $utils = $this->getUtilsDirectory();
+        $logs = $this->getLogDirectory();
+        $config = $this->getConfigFilePath();
+        $ignore = $this->getIgnoreFilePath();
+
+        # If no log file exists, temporarily use a buffer.
+        $buffer = !file_exists($logs) ? '' : NULL;
+
+        $this->output("----------------------------------------", 2, $buffer);
+        $this->output("Running setup.", 1, $buffer);
+        $this->output("----------------------------------------", 1, $buffer);
+
+        # Create .deploy/ directory, if needed.
+        $this->output("Creating .deploy/ directory... ", 2, $buffer);
+        if (!file_exists($utils)) {
+            if (!@mkdir($utils, 0755, true)) {
+                $this->output("Failed", 0, $buffer);
+                throw new ExitApp("Setup will terminate. You can try creating $utils manually, or file a bug report.");
+            }
+
+            $this->output("Done.", 0, $buffer);
+        } else {
+            $this->output("Not needed. $utils already exists.", 0, $buffer);
+        }
+
+        chmod($utils, 0755);
+
+        # Create .deploy/logs/ directory, if needed.
+        $this->output("Creating .deploy/logs/ directory... ", 1, $buffer);
+        if (!file_exists($logs)) {
+            if (!@mkdir($logs, 0755, true)) {
+                $this->output("Failed", 0, $buffer);
+                throw new ExitApp("Setup will terminate. You can try creating $logs manually, or file a bug report.");
+            }
+
+            $this->output("Done.", 0, $buffer);
+        } else {
+            $this->output("Not needed. $logs already exists.", 0, $buffer);
+        }
+
+        # Create .deploy/deploy-config.ini, if needed.
+        $this->output("Creating .deploy/deploy-config.ini... ", 1, $buffer);
+        if (!file_exists($config)) {
+            if (!file_put_contents($config, $this->getDefaultConfigFileContents())) {
+                $this->output("Failed.", 0, $buffer);
+                throw new ExitApp("Terminating. Try manually creating $config.");
+            }
+
+            $this->output("Done.", 0, $buffer);
+        } else { 
+            $this->output("Not needed. $config already exists.", 0, $buffer);
+            $this->output("If you wanted to restore the default config file, delete the old one first and run --setup again.", 1, $buffer);
+        }
+
+        # Create .deploy/.deployignore, if needed.
+        $this->output("Creating .deploy/.deployignore... ", 1, $buffer);
+        if (!file_exists($ignore)) {
+            if (!file_put_contents($ignore, $this->getDefaultIgnoreFileContents())) {
+                $this->output("Failed.", 0, $buffer);
+                throw new ExitApp("Terminating. Try manually creating $ignore.");
+            }
+
+            $this->output("Done.", 0, $buffer);
+        } else { 
+            $this->output("Not needed. $ignore already exists.", 0, $buffer);
+            $this->output("If you wanted to restore the default ignore file, delete the old one first and run --setup again.", 1, $buffer);
+        }
+        
+        if (file_exists($logs)) $this->dumpBuffer($buffer);
+    }
+
+    /**
+     * Extract server settings from a configuration file.
+     *
+     * @param array restrictList  An optional list of servers to restrict deployment to.
+     */
+    public function setConfigFile($restrictList)
+    {
+        $this->output("----------------------------------------", 2);
+        $this->output("Initializing config values.");
+        $this->output("Deployment configuration file: $config");
+        $this->output("----------------------------------------");
+
+        $config = $this->getConfigFilePath();
+        $this->configFile = $config;
+
+        if (!@file_exists($config)) {
+            $this->output("Config file '$config' does not exist!", 2);
+            $this->output("You can restore the config file by running php git-deploy --setup.");
+            throw new ExitApp();
+        }
+
+        $serverList = parse_ini_file($config, true);
+
+        if (!$serverList) {
+            throw new ExitApp("Config file '$config' is not a valid .ini file.");
+        }
+
+        $this->addServers($serverList, $restrictList);
+    }
+
+    /**
+     * Setup the ignore file.
+     */
+    public function setIgnoreFile()
+    {
+        $this->ignoreFile = $this->getIgnoreFilePath();
+    }
+
+    /**
+     * Return the default deploy-config.ini file.
+     *
+     * The default configuration file is stored in code because that way it can
+     * always be restored if deleted by accident. It is formatted with quotes then
+     * cleaned of leading whitespace so as not to ruin indentation too much. (People before machines.)
+     */
+    protected function getDefaultConfigFileContents()
+    {
+        $default = "; -----------------------------------------------------------------------------
+                    ; This is the default deployment config file. Replace options below with values
+                    ; relavant to you. If this file is ever deleted and you don't remember what was
+                    ; required for it to work, just run git-deploy and a new deploy.ini will be
+                    ; generated with default values filled out and comments restored. Feel free to
+                    ; remove the comments if you don't need them.
+                    ; -----------------------------------------------------------------------------
+
+                    ; Server identifier. Required.
+                    ; You may specify more than one server, each with its own unique identifier and options.
+                    [example]
+
+                    ; Whether to skip this configuration section.
+                    ; This is only set to true for the example.
+                    ; ### SET THIS TO FALSE WHEN DEPLOYING! ###
+                    skip = true
+
+                    ; Shortform. This declaration combines the username, password, host,
+                    ; port, and path in one line.
+                    short: ftp://username:password@example.com:21/path/to/installation]
+
+                    ; The FTP username to login as.
+                    ; May be the same as your hosting or cPanel username.
+                    user = ftp_user
+
+                    ; The FTP password to login with.
+                    ; May be the same as your hosting or cPanel password.
+                    pass = ftp_pass
+
+                    ; The FTP host to connect to.
+                    ; If you own your own domain name you can generally just enter that.
+                    ; Otherwise, most hosting providers (godaddy, bluehost, etc.) have FAQ
+                    ; pages you can check out. A google search can also be informative.
+                    host = example.com
+
+                    ; The port to use for the FTP connection, if the connection mode is active.
+                    ; Most servers are configured to use port 21 and connect back to you on port 20.  
+                    ; If using active mode, make sure this port is open in your firewall.
+                    ; Defaults to 21;
+                    port = 21
+
+                    ; Whether to use active or passive connection modes.
+                    ; If true, use passive, else use active. Defaults to true.
+                    ; Passive mode is generally useful if you are behind a firewall.
+                    ; If you don't understand the difference, this StackOverflow answer
+                    ; will help: http://stackoverflow.com/a/1699163/1270419
+                    passive = true
+
+                    ; A path relative to the home directory on the server where files should be uploaded to.
+                    path = upload/destination/
+
+                    ; Directories to empty on each deployment. The directory itself will not be removed.
+                    ; Useful for clearing out temporary files, for example.
+                    clean_directories[] = 'temp'
+                    clean_directories[] = 'cache'";
+
+        # Strip leading whitespace from each line and return
+        return join("\n", array_map("trim", explode("\n", $default)));
+    }
+
+    /**
+     * Return the default .deployignore file.
+     *
+     * The .deployignore file specifies which files and directories should not be uploaded.
+     * The default file is stored in code because that way it can always be restored
+     * if deleted by accident. It is formatted with quotes then cleaned of leading
+     * whitespace so as not to ruin indentation too much. (People before machines.)
+     *
+     * The .deployignore file responds to the same syntax as a .gitignore file.
+     * @see http://git-scm.com/docs/gitignore
+     */
+    protected function getDefaultIgnoreFileContents()
+    {
+        $default = "# Feel free to delete this massive comment section.
+
+                    # Description:
+                    # This is the default .deployignore file. It functions similar to a .gitignore file, 
+                    # (and has an almost identical syntax, with the addition of optional regexes) except
+                    # that instead of excluding files from version control, it excludes files from being
+                    # deployed to a server. Since files not tracked by git aren't included in deployment
+                    # anyway, you don't need to duplicate your .gitignore file here.
+                  
+                    # Function:
+                    #   > Blank lines are ignored.
+                    #   > Lines beginning with # are ignored.
+                    #   > Patterns starting with ! negate any matches.
+                    #   > Negations have a higher precedence, and will not be overridden by following exclusions (unlike .gitignore).
+                    #   > Each line can only contain one pattern.
+                    #   > Each pattern uses the fnmatch() php function to match filenames, or regex, if turned on.
+                    #   > Patterns are searched relative to git-deploy's location.
+                    #   > If you want to match a filepath that starts with # or !, you can escape the character with a backslash.
+          
+                    # Available wildcards:
+                    #   > Match everything except '/':        *
+                    #   > Match any single character:         ?
+                    #   > Match everything:                   **
+                    #   > Match * or ? or ** characters:      [?] or [*] or [*][*]
+                    #   > Match any character in letters:     [letters]
+                    #   > Match any character not in letters: [!letters]
+          
+                    # Using regex:
+                    #   > You can toggle regex patterns by typing 'regex on' or 'regex off' on its own line. All 
+                    #   > patterns coming after a 'regex on' line are parsed as regex. Lines after 'regex off' are
+                    #   > parsed in .gitignore style again. The regex toggle line is case insensitive, so 'REGEX OFF'
+                    #   > works just as well as 'regex off' or 'ReGeX oFf'. (Please don't use thet last one!)
+                    #   > 
+                    #   > Note that with regex, the ^ anchor character will anchor to the beginning of the path relative to
+                    #   > the git-deploy file, so ^hello.txt$ matches hello.txt only when it is in the root directory.
+                  
+                    # Examples:
+                    #   > Exclude every file:                   **
+                    #   > Exclude all .tmp files:               *.tmp
+                    #   > Exclude all files within dir:         dir/
+                    #   > ...except .php files:                 !dir/*.php
+                    #   > Exclude bat, hat, cat, etc:           ?at
+                    #   > Exclude .txt files in root directory: /*.txt
+          
+                    # .deployignore's syntax works the same as .gitignores, minus bugs. (Report them!)
+                    # See git-scm.com/docs/gitignore/#_pattern_format for how .gitignore pattern format works.
+
+                    # The patterns below are hard-coded into this script for security reasons. You can safely remove them in this file.
+                    
+                    # git-deploy*
+                    # .deploy/
+                    # basename(__FILE__)* # This one is evaluated to whatever this script's name is.";
+
+        # Strip leading whitespace from each line and return
+        return join("\n", array_map("trim", explode("\n", $default)));
+    }
+    /**
+     * Adds a server to the deployment list.
+     *
+     * The $serverList argument is an array of different server configurations,
+     * each set up using the options as defined in the config file. Two syntaxes
+     * are allowed: The shortform (An FTP url starting with ftp:// ), or the name
+     * of the server followed by all the options. The options in the config file
+     * all go by the same names as those returned by parse_url(), so array_merge()
+     * is used to combine them. The same process is used to define some useful defaults.
+     *
+     * @param array serverList    An associative array of server identifiers to server configuration options.
+     * @param array restrictList  A list of server identifiers to deploy. All others are excluded.
+     */
+    protected function addServers($serverList, $restrictList)
+    {
+        $this->output("Fetching servers...", 2);
+
+        if (!empty($restrictList)) {
+            $removeList = array_diff(array_keys($serverList), $restrictList);
+
+            foreach ($removeList as $server) {
+                $this->output("   " . "Skipping server with identifier \"$server\"");
+                unset($serverList[$server]);
+            }
+        }
+
+        foreach ($serverList as $server => $options) {
+            $this->output("   " . "Adding server with identifier \"$server\"");
+
+            # If the shortform syntax is used in the config file.
+            if (@substr($server['short'], 0, 6) == 'ftp://') {
+                $options = array_merge($options, parse_url($server['short']));
             }
 
             # Throw in some default values, in case they're not set.
@@ -116,271 +732,1240 @@ class Terra_Git {
                 'clean_directories' => array()
                     ), $options);
 
+            # This serves as an identifier for LOCAL_REVISION files.
+            $options['name'] = $server;
+
+            # Skip if configured, else assign to $this->serverList.
             if ($options['skip']) {
-                continue;
-            } else {
-                $this->servers[$uri] = $options;
+              $this->output("'skip' config value set to true.", 2);
+              $this->output("Skipping deployment to server with identifier {$server['name']}.");
+              continue;
             }
+            $this->serverList[$server] = $options;
         }
     }
 
-    function ignoreFile($file) {
-        $this->filesToIgnore[] = $file;
+    /**
+     * Prints all the changes pending on all servers.
+     *
+     * @param string revision  The revision to list changes to.
+     */
+    public function printAllStatuses($revision)
+    {
+      foreach ($this->serverList as $server) {
+        $this->printServerStatus($revision, $server);
+      }
     }
 
-    function getFilesToUpload($oldRevision = null, $newRevision = 'HEAD') {
-        # Get the list of files to update.
-
-        if (!empty($oldRevision)) {
-            $command = "git diff --name-status {$oldRevision} {$newRevision}";
-        } else {
-            $command = "git ls-files";
-        }
-
-        $output = array();
-        exec($command, $output);
-
-        $filesToUpload = array();
-        $filesToDelete = array();
-
-        if (!empty($oldRevision)) {
-            foreach ($output as $line) {
-                if ($line[0] == 'A' or $line[0] == 'C' or $line[0] == 'M') {
-                    $path = trim(substr($line, 1, strlen($line)));
-                    $filesToUpload[] = $path;
-                } elseif ($line[0] == 'D') {
-                    $filesToDelete[] = trim(substr($line, 1, strlen($line)));
-                } else {
-                    throw new Exception("Unknown git-diff status: {$line[0]}");
-                }
-            }
-        } else {
-            $filesToUpload = $output;
-        }
-
-        foreach ($filesToUpload as $key => $file) {
-            if (in_array($file, $this->filesToIgnore)) {
-                unset($filesToUpload[$key]);
-            }
-        }
-
-        return array(
-            'upload' => $filesToUpload,
-            'delete' => $filesToDelete
-        );
-    }
-
-    function output($message) {
-        if ($this->print) {
-            echo $message . "\r\n";
-        } else {
-            $this->logBuffer .= $message . "\r\n";
-        }
-    }
-
-    function __destruct() {
-        
-    }
-
-    function revert() {
-        foreach ($this->servers as $server) {
-            $this->deployGitOverFtp($server, 'HEAD', true);
-        }
-    }
-
-    function deploy($revision = 'HEAD') {
-        foreach ($this->servers as $server) {
-            $this->deployGitOverFtp($server, $revision);
-        }
-    }
-
-    function deployGitOverFtp($server, $revision = 'HEAD', $revert = false) {
-
-        if ($revision == 'HEAD') {
-            $revision = exec('git rev-parse HEAD');
-        }
-
-        # Let's make sure the $path ends with a slash.
-
-        if (substr($server['path'], strlen($server['path']) - 1, strlen($server['path'])) !== '/') {
-            $server['path'] = $server['path'] . '/';
-        }
-
-        $pathsThatExist = array();
-
-        # Okay, let's connect to the server.
-
-        $connection = @ftp_connect($server['host'], $server['port']);
-
-        if (!$connection) {
-            throw new Exception("Could not connect to {$server['host']}.");
-        } else {
-
-            if (!@ftp_login($connection, $server['user'], $server['pass'])) {
-                throw new Exception("Could not login to {$server['host']} (Tried to login as {$server['user']}).");
-            }
-
-
-            ftp_pasv($connection, $server['passive']);
-
-            if (ftp_chdir($connection, $server['path'])) {
-                
-            } else {
-                throw new Exception("Could not change the FTP directory to {$server['path']}.");
-            }
-
-            $this->output(("----------------------------"));
-            $this->output("Connected to {$server['host']}{$server['path']}");
-            $this->output("----------------------------");
-
-            # Now that we're logged in to the server, let's get the remote revision.
-
-            $remoteRevision = '';
-
-            $tmpFile = tmpfile();
-
-            if (@ftp_fget($connection, $tmpFile, 'REVISION', FTP_ASCII)) {
-                fseek($tmpFile, 0);
-                $remoteRevision = trim(fread($tmpFile, 1024));
-                fclose($tmpFile);
-            } else {
-                # Couldn't get the file. I assume it's because the file didn't exist.
-            }
-
-            $tmpFile = tmpfile();
-
-            if (@ftp_fget($connection, $tmpFile, 'PREVIOUS_REVISION', FTP_ASCII)) {
-                fseek($tmpFile, 0);
-                $previousRevision = trim(fread($tmpFile, 1024));
-                fclose($tmpFile);
-            } else {
-                # Couldn't get the file. I assume it's because the file didn't exist.
-            }
-
-            if ($revert) {
-
-                if (!isset($previousRevision)) {
-                    throw new Exception("Could not find previous revision in {$server['host']}, which means that reverting is not possible.");
-                }
-
-                # Set revision to PREVIOUS_REVISION, for reverting.
-                $revision = $previousRevision;
-                if ($remoteRevision != $revision) {
-                    $this->output("Reverting from " . substr($remoteRevision, 0, 6) . " to " . substr($revision, 0, 6) . ".");
-                    $this->output("----------------------------");
-                }
-            } else {
-                if ($remoteRevision != $revision) {
-                    $this->output("Deploying update from " . substr($remoteRevision, 0, 6) . " to " . substr($revision, 0, 6) . ".");
-                    $this->output("----------------------------");
-                }
-            }
-
-            $files = $this->getFilesToUpload($remoteRevision, $revision);
-            $filesToUpload = $files['upload'];
-            $filesToDelete = $files['delete'];
-            unset($files);
-
-            foreach ($filesToUpload as $file) {
-                # Make sure the folder exists in the FTP server.
-
-                $dir = explode("/", dirname($file));
-                $path = "";
-                $ret = true;
-
-                for ($i = 0; $i < count($dir); $i++) {
-                    $path.= $dir[$i] . '/';
-
-                    if (!isset($pathsThatExist[$path])) {
-                        $origin = ftp_pwd($connection);
-
-                        if (!@ftp_chdir($connection, $path)) {
-                            if (!@ftp_mkdir($connection, $path)) {
-                                $ret = false;
-                                $this->output("Failed to create '$path'.");
-                                $this->output("A problem occurred while attempting to create a folder. Upload to this server cannot continue.");
-                                return;
-                            } else {
-                                $this->output("Created directory '$path'.");
-                                $pathsThatExist[$path] = true;
-                            }
-                        } else {
-                            $pathsThatExist[$path] = true;
-                        }
-
-                        ftp_chdir($connection, $origin);
-                    }
-                }
-
-                $uploaded = false;
-                $attempts = 1;
-                while (!$uploaded) {
-
-                    if ($attempts == 10) {
-                        $this->output("Tried to upload $file 10 times, and failed 10 times. Something is wrong, so I'm going to stop executing now.");
-                        exit;
-                    }
-
-                    # This makes sure to repeat the upload until it finally succeeds.
-                    # Hopefully helps fix a problem where some files aren't transferred.
-                    $uploaded = @ftp_put($connection, $file, $file, FTP_BINARY);
-
-                    if (!$uploaded) {
-                        $attempts = $attempts + 1;
-                        $this->output("Failed to upload {$file}. Retrying (attempt $attempts/10)... ");
-                    }
-                }
-                $this->output("Uploaded {$file}");
-            }
-
-            foreach ($filesToDelete as $file) {
-                @ftp_delete($connection, $file);
-                $this->output("Deleted {$file}");
-            }
-
-            if (!empty($server['clean_directories'])) {
-                foreach ($server['clean_directories'] as $dir) {
-                    if (!$tmp_files = ftp_nlist($connection, $dir)) {
-                        $this->output("{$dir} already empty");
-                        continue;
-                    }
-
-                    foreach ($tmp_files as $file) {
-                        ftp_delete($connection, $file);
-                    }
-                    $this->output("Emptied {$dir}");
-                }
-            }
-
-            if (count($filesToUpload) > 0 or count($filesToDelete) > 0) {
-                $this->output("----------------------------");
-                $temp = tempnam(sys_get_temp_dir(), 'gitRevision');
-                file_put_contents($temp, $revision);
-                ftp_put($connection, 'REVISION', $temp, FTP_BINARY);
-                unlink($temp);
-                $this->output("Uploaded REVISION file.");
-
-                # Upload file containing the current revision, for reverting when necessary.
-                # But, only if the revision we're deploying is different from the one currently deployed.
-                if ($remoteRevision != $revision) {
-                    $temp = tempnam(sys_get_temp_dir(), 'gitRevision');
-                    file_put_contents($temp, $remoteRevision);
-                    ftp_put($connection, 'PREVIOUS_REVISION', $temp, FTP_BINARY);
-                    unlink($temp);
-                    $this->output("Uploaded PREVIOUS_REVISION file.");
-                }
-            } else {
-                $this->output("No files to upload.");
-            }
-            
-            $this->output( "----------------------------");
-
-            $this->output("Finished working on {$server['host']}{$server['path']}");
-            
-            $this->output( "----------------------------");
-
+    /**
+     * Deploys a revision to all servers.
+     *
+     * @param string revision  The revision to deploy.
+     * @param bool resumeOnly  Whether to stop after resuming.
+     */
+    public function deployAll($revision, $resumeOnly)
+    {
+        foreach ($this->serverList as $server) {
+            $connection = $this->connect($server);
+            if (!$connection) continue;
+            $this->deploy($connection, $server, $revision, $resumeOnly);
             ftp_close($connection);
         }
     }
 
+    /**
+     * Cleans all servers' upload directories.
+     */
+    public function cleanAll()
+    {
+        foreach ($this->serverList as $server) {
+            $connection = $this->connect($server);
+            if (!$connection) continue;
+            $this->clean($connection, $server);
+            ftp_close($connection);
+        }
+
+        $this->output("----------------------------------------", 2);
+        $this->output("Cleaning local files...");
+        $this->output("----------------------------------------");
+
+        foreach ($this->serverList as $server) {
+            $localRevisionPath = $this->getRemoteRevisionLocalFilePath($server['name']);
+            if (file_exists($localRevisionPath)) {
+                $this->output("LOCAL_REVISION file found for {$server['name']}. Removing... ", 2);
+                if (!$this->dryrun && !@unlink($localRevisionPath)) {
+                    $this->output("Failed.", 0);
+                    throw new ExitApp("Couldn't remove $localRevisionPath. Try doing it manually.");
+                }
+
+                $this->output("Done.", 0);
+            }
+
+            $resumeFile = $this->getResumeFilePath($server['name']);
+            if (file_exists($resumeFile)) {
+                $this->output("RESUME file found for {$server['name']}. Removing... ");
+
+                if (!$this->dryrun && !@unlink($resumeFile)) {
+                    $this->output("Failed.", 0);
+                    throw new ExitApp("Couldn't remove $resumeFile. Try doing it manually.");
+                }
+
+                $this->output("Done.", 0);
+            }
+        }
+    }
+
+    /**
+     * Returns a list of the files and their statuses.
+     *
+     * Runs and parses git-diff to get all files and how they would change if the given
+     * revision were uploaded. The return format is an array of filename-status pairs, one
+     * per index. The status is indicated by a single character that is the same as those used
+     * by git-diff. If the $oldRevision parameter is set to NULL, all files will be returned
+     * with the status indicator 'A', for 'add'.
+     *
+     * Files that match the shell glob patterns found within the configured ignorefile
+     * will be excluded from the returned array of files.
+     *
+     * @see http://stackoverflow.com/a/8691226/1270419 for a list of git-diff statuses.
+     *
+     * @param string oldRevision      The revision the changes will be relative to.
+     * @param string revision         The revision to compare with.
+     * @param array cleanDirectories  Optional directories to empty that are not tracked by git.
+     * @return array                  All files that different in newRevision compared to oldRevision.
+     */
+    protected function getFileStatusList($oldRevision = NULL, $revision = 'HEAD', $cleanDirectories = array())
+    {
+        $cleanFiles = array();
+        foreach ($cleanDirectories as $directory) {
+            $status = 'clean';
+            $path = $directory;
+
+            $cleanFiles[] = array('path' => $path, 'status' => $status);
+        }
+
+        if (empty($revision)) return $cleanFiles;
+
+        $output = array();
+        $command = empty($oldRevision) 
+          ? "git ls-files --with-tree=$revision" 
+          : "git diff --name-status $oldRevision $revision";
+
+        $this->runGitCommand($command, $output);
+
+        $files = array();
+        foreach ($output as $line) {
+            $status =  empty($oldRevision) ? 'A' : substr($line, 0, 1);
+            $path = empty($oldRevision) ? trim($line) : trim(substr($line, 1));
+
+            $files[] = array('path' => $path, 'status' => $status);
+        }
+
+        $this->output("Parsing .deployignore...", 2);
+
+        $ignoreFile = @file($this->ignoreFile);
+        $ignorePatterns = array();
+        $includePatterns = array();
+        $useRegex = false;
+
+        foreach ($ignoreFile as $line) {
+            $line = trim($line);
+            $firstChar = substr($line, 0, 1);
+
+            # It's a comment or a blank line.
+            if (empty($line) || $firstChar == '#') continue;
+
+            # Toggle regex values.
+            if (strtolower($line) == 'regex on') $useRegex = true;
+            else if (strtolower($line) == 'regex off') $useRegex = false;
+
+            # It's an include pattern, else an ignore pattern.
+            # Ignore patterns are stripped of leading escape characters.
+            if ($firstChar == '!') $includePatterns[] = array('pattern' => substr($line, 1), 'regex'  => $useRegex);
+            else $ignorePatterns[] = array('pattern' => ltrim($line, '\\'), 'regex' => $useRegex);
+        }
+
+        # These ignore patterns are hard-coded for security purposes.
+        $masterPatterns = array();
+        $masterPatterns[]  = 'git-deploy*';
+        $masterPatterns[]  = basename(__FILE__) . '*';
+        $masterPatterns[]  = '.deploy/';
+
+        foreach($ignorePatterns as $pattern) $this->output("   " . "Ignore pattern: " . $pattern['pattern']);
+        foreach($includePatterns as $pattern) $this->output("   " . "Negate pattern: " . $pattern['pattern']);
+
+
+        $this->output("Filtering files...", 2);
+
+        $padSize = 0;
+        $ignoreCount = 0;
+
+        # For formatting purposes only.
+        foreach (array_merge($ignorePatterns, $includePatterns) as $pattern) {
+            $padSize = max($padSize, strlen($pattern['pattern']));
+        }
+
+        foreach ($files as $key => $file) {
+            $path = $file['path'];
+            $ignore = false;
+            $isMasterIgnored = false;
+
+
+            # Exclude security risks.
+            foreach ($masterPatterns as $master) {
+                if ($this->matchFile($master, $path)) {
+                    $isMasterIgnored = true;
+                    if ($this->showFiltered) {
+                        $this->output("   " . '[Excluded with master pattern] ' . str_pad($master, $padSize, ' ') . " => " . $path);
+                    }
+                }
+            }
+
+            if ($isMasterIgnored) {
+              unset($files[$key]);
+              $ignoreCount++;
+              continue;
+            }
+            
+            foreach ($ignorePatterns as $pattern) {
+                if ($this->matchFile($pattern['pattern'], $path, $pattern['regex'])) {
+                    if ($this->showFiltered) {
+                        $this->output("   " . '[Excluded with pattern] ' . str_pad($pattern['pattern'], $padSize, ' ') . " => " . $path);
+                    }
+
+                    $ignore = true;
+                    break; 
+                }
+            }
+
+            if (!$ignore) continue;
+
+            foreach ($includePatterns as $pattern) {
+
+                if ($this->matchFile($pattern['pattern'], $path, $pattern['regex'])) {
+                    if ($this->showFiltered) {
+                        $this->output("   " . '[Included again with pattern] ' . str_pad($pattern['pattern'], $padSize, ' ') . " => " . $path);
+                    }
+                    $ignore = false;
+                    break; 
+                }
+            }
+
+            if ($ignore) {
+              unset($files[$key]);
+              $ignoreCount++;
+            }
+        }
+
+        # For formatting.
+        $skipLines = ($ignoreCount > 0 && $this->showFiltered) ? 2 : 1;
+        $this->output("   " . "$ignoreCount " . pluralize($ignoreCount, "file", "files") . " filtered.", $skipLines);
+
+        # cleanFiles comes first so it is operated on last in deployGitOverFtp().
+        return array_merge($cleanFiles, $files);
+    }
+
+    /**
+     * Outputs all files to be uploaded or deleted on the next deployment of the specified revision.
+     *
+     * @param string revision  The revision to list changes against.
+     * @param array server     An array of configuration values for the server.
+     */
+    protected function printServerStatus($revision, $server) {
+        $revision = $this->runGitCommand("git rev-parse $revision");
+        $localRevision = $this->getRemoteRevisionLocalFilePath($server['name']);
+        $remoteRevision = trim(@file_get_contents($localRevision)) ?: NULL;
+
+        $old = substr($remoteRevision, 0, 6) ?: 'empty remote';
+        $new = substr($revision, 0, 6);
+
+        $this->output("----------------------------------------", 2);
+        $this->output("Working on server \"{$server['name']}\".");
+        $this->output("Listing files for upload and deletion.");
+        $this->output("Changes shown are from $old to $new.");
+        $this->output("----------------------------------------");
+
+        $files = $this->getFileStatusList($remoteRevision, $revision); 
+
+        $resumeFilePath = $this->getResumeFilePath($server['name']);
+        if (file_exists($resumeFilePath)) {
+            $resumeRevision = trim($resumeFile[0]);
+            $resumeFiles = $this->parseResumeFile($resumeFilePath);
+
+            if (empty($resumeRevision)) {
+                $this->output("RESUME file found for cleaning of {$server['path']}", 2);
+            } else {
+                $this->output("RESUME file found for deployment of revision " . substr($resumeRevision, 0, 6) . ".", 2);
+            }
+
+            if ($revision == $resumeRevision) {
+                $this->output("Files already uploaded will not be listed.");
+                $files = $resumeFiles;
+            } else {
+                $resumeCount = 0;
+                $statusCounter = array();
+
+                $this->output("Status list for waiting files:", 2);
+
+                foreach ($resumeFiles as $file) {
+                    $status = $file['status'];
+                    $this->output("   " . "[$status]" . " " . $file['path']);
+
+                    $resumeCount++;
+                    $statusCounter[$status]++;
+                }
+
+                $addCount    = isset($statusCounter['A']) ? $statusCounter['A'] : 0;
+                $modifyCount = isset($statusCounter['M']) ? $statusCounter['M'] : 0;
+                $deleteCount = isset($statusCounter['D']) ? $statusCounter['D'] : 0;
+                $cleanCount  = isset($statusCounter['clean']) ? $statusCounter['clean'] : 0;
+
+                $this->output($addCount    . " " . pluralize($addCount,    'file', 'files') . " to resume adding.", 2);
+                $this->output($modifyCount . " " . pluralize($modifyCount, 'file', 'files') . " to resume updating.");
+                $this->output($deleteCount . " " . pluralize($deleteCount, 'file', 'files') . " to resume deleting.");
+                $this->output($cleanCount  . " " . pluralize($cleanCount, 'directory', 'directories') . " to resume cleaning.");
+            }
+        }
+
+        $this->output("Status list:", 2);
+        if (count($files) == 0) $this->output("   " . "No files changed.");
+
+        $statusCounter = array();
+        foreach ($files as $file) {
+            $status = $file['status'];
+            $this->output("   " . "[$status]" . " " . $file['path']);
+
+            $statusCounter[$status]++;
+        }
+
+        $addCount    = isset($statusCounter['A']) ? $statusCounter['A'] : 0;
+        $modifyCount = isset($statusCounter['M']) ? $statusCounter['M'] : 0;
+        $deleteCount = isset($statusCounter['D']) ? $statusCounter['D'] : 0;
+        $cleanCount  = isset($statusCounter['clean']) ? $statusCounter['clean'] : 0;
+
+        $this->output("$addCount "    . pluralize($addCount,    'file', 'files') . " to add.", 2);
+        $this->output("$modifyCount " . pluralize($modifyCount, 'file', 'files') . " to update.");
+        $this->output("$deleteCount " . pluralize($deleteCount, 'file', 'files') . " to delete.");
+        $this->output("$cleanCount "  . pluralize($cleanCount, 'directory', 'directories') . " to clean.");
+    }
+
+    /**
+     * Uploads a REVISION file to the specified server.
+     *
+     * @param string serverName  The identifier of the server as configured in deploy-config.ini.
+     */
+    public function setRemoteRevisionFile($serverName)
+    {
+        $server = $this->serverList[$serverName]; # Should be the only one anyway.
+        $connection = $this->connect($server);
+
+        $this->output("Setting the remote REVISION file for server with identifier \"$serverName\".", 2);
+        $this->output("IMPORTANT: Make sure that the remote hash is accurate! Failure to do so will result in out-of-sync deployments.", 2);
+        $this->output("If you're unsure, cancel this and run --clean on the server. Then deploy the latest commit. Everything will be in sync that way.");
+        
+        $this->output("What revision do you want to set? You can specify a hash, tag, or other identifier.", 2);
+
+        $revision = $this->getInput("Revision: ", 2);
+        $revision = $this->runGitCommand("git rev-parse $revision");
+
+        $confirm = $this->getInput("Confirm your answer: ", 0);
+        $confirm = $this->runGitCommand("git rev-parse $confirm");
+
+        if ($revision != $confirm) {
+            throw new ExitApp("Your two inputs did not match each other. Check your input and try again.");
+        }
+
+        $this->output("Setting REVISION file... ");
+
+        $existing = $this->getRemoteRevision($connection);
+        if ($existing) {
+            throw new ExitApp("There's an existing REVISION file set to revision $existing. Delete it first if you want to override it.");
+        }
+
+        $this->storeRevisionHash($connection, $server, $revision);
+        
+        $this->output("Operation completed successfully. You can deploy to the latest commit now.", 2);
+    }
+
+    /**
+     * Cleans out a server's configured upload path, over FTP.
+     *
+     * @param resource connection  An open ftp stream.
+     * @param string server        An array of server configuration values.
+     */
+    protected function clean($connection, $server) {
+        $serverName = $server['name'];
+        $deployPath = $server['path'];
+
+        $this->output("----------------------------------------", 2);
+        $this->output("Cleaning upload directory for $serverName...");
+        $this->output("----------------------------------------");
+        $this->output("Cleaning...", 2);
+
+        $files = $this->getFileStatusList(NULL, NULL, array($server['path']));
+        $contents = PHP_EOL;
+        foreach ($files as $file) {
+            $contents .= $file['status'] . " " . $file['path'] . PHP_EOL;
+        }
+
+        $resumeFilePath = $this->getResumeFilePath($serverName);
+
+        if (!$this->dryrun) file_put_contents($resumeFilePath, $contents);
+        $this->deployGitOverFtp($connection, $server, NULL, NULL, $resumeFilePath);
+    }
+
+    /**
+     * Deploys a git repo over FTP, resuming previous deployments if necessary.
+     *
+     * If a RESUME file is found on disk, this function will grab its contents and
+     * finish the interupted deployment before running the current one. If the --resume-only
+     * flag is set, then execution will end after a successful resumption.
+     *
+     * RESUME files contain the deploying revision's SHA-1 as the first line and
+     * file-status pairs on every line after that. deployGitOverFtp() accepts a path
+     * to such a file to work on, and iterates over each file and its status to figure
+     * out what to do. Once the appropriate action has been taken, the processed file's line
+     * is removed from the RESUME file. This continues until the file is empty.
+     *
+     * @param resource connection  An open FTP stream.
+     * @param array server         An array of server configuration values.
+     * @param string revision      The revision to deploy.
+     * @param bool resumeOnly      Whether to continue with deployment after resuming.
+     */
+    protected function deploy($connection, $server, $revision, $resumeOnly = false)
+    {
+        $revision = $this->runGitCommand("git rev-parse $revision");
+        $deployPath = $server['path'];
+
+        $this->output("----------------------------------------", 2);
+        $this->output("Deploying to server with identifier \"{$server['name']}\".");
+        $this->output("Deployment target: {$server['host']}{$server['path']}.");
+        $this->output("----------------------------------------");
+
+        $this->output("Fetching REVISION file... ", 2);
+
+        $remoteRevision = $this->getRemoteRevision($connection);
+        $message = $remoteRevision ? "Done" : "Not found.";
+
+        $this->output($message, 0);
+        $this->output("Checking for previous deployments to resume... ", 2);
+
+        $resumeFilePath = $this->getResumeFilePath($server['name']);
+        $resumeFile = @file($resumeFilePath);
+
+        if ($resumeFile) {
+            $resumeRevision = trim($resumeFile[0]);
+            unset($resumeFile[0]);
+
+            $this->output("RESUME file found.", 0);
+            $this->output("----------------------------------------", 2);
+            if (empty($resumeRevision)) {
+                $this->output("Resuming cleaning of {$server['path']}");
+            } else {
+                $this->output("Resuming deployment of " . substr($resumeRevision, 0, 6)); 
+            }
+            $this->output("----------------------------------------");
+
+            $this->deployGitOverFtp($connection, $server, $remoteRevision, $resumeRevision, $resumeFilePath);
+
+            $this->output("Resume sucessfully completed.", 2);
+
+            if ($resumeOnly) return;
+
+            if ($resumeRevision == $remoteRevision) {
+                $this->output("Finished deploying to {$server['host']}. Revision is up to date.", 2);
+                return;
+            }
+        } else {
+          $this->output("None found.", 0);
+
+          if ($resumeOnly) {
+            return;
+          }
+        }
+
+        # Exit if deploy not needed, or is first-time and upload directory contains more than '.' and '..' paths.
+        if ($remoteRevision == $revision) {
+            $this->output("Server is already up to date.", 2);
+            return;
+        }
+        else if ($remoteRevision === NULL && count(ftp_nlist($connection, $deployPath)) > 2) {
+            $this->output("Upload directory not empty for first-time deployment! Run with --clean and retry.", 2);
+            return;
+        } 
+
+        $old = isset($remoteRevision) ? substr($remoteRevision, 0, 6) : 'empty remote';
+        $new = substr($revision, 0, 6);
+
+        $this->output("----------------------------------------", 2);
+        $this->output("Beginning deployment.");
+        $this->output("Updating from $old to $new.");
+        $this->output("----------------------------------------");
+
+        # Get changed files and set the RESUME file's contents.
+        # Then call deployGitOverFtp().
+        $files = $this->getFileStatusList($remoteRevision, $revision, $server['clean_directories']);
+        $deleteCount = $uploadCount = $cleanCount = 0;
+
+        $contents = $revision . PHP_EOL;
+        foreach ($files as $file) {
+            $status = $file['status'];
+            $path = $file['path'];
+            $contents .= $status . " " . $path . PHP_EOL;
+
+            if ($status == 'D') $deleteCount++;
+            else if ($status == 'clean') $cleanCount++;
+            else $uploadCount++;
+        }
+
+        if (!$this->dryrun) file_put_contents($resumeFilePath, $contents);
+
+        $this->output("----------------------------------------", 2);
+        $this->output("Deploying " . substr($revision, 0, 6) . "...");
+        $this->output("----------------------------------------");
+
+        $this->deployGitOverFtp($connection, $server, $remoteRevision, $revision, $resumeFilePath);
+
+        if (count($files) > count($server['clean_directories'])) {
+            $this->output("Finishing up...", 2);
+            $this->storeRevisionHash($connection, $server, $revision);
+        }
+
+        $this->output( "----------------------------------------", 2);
+        $this->output("Finished working on {$server['host']}{$server['path']}");
+        $this->output("Files uploaded: $uploadCount");
+        $this->output("Files deleted: $deleteCount");
+        $this->output("Directories cleaned: $cleanCount");
+        $this->output("Total elapsed time: " . secondsToWords(time() - $this->startTime) . ".");
+        $this->output( "----------------------------------------");
+    }
+
+    /**
+     * Pulls a remote directory down from a server over FTP and saves it.
+     *
+     * @param string name  The server identifier to fetch from $this->serverList.
+     */
+    public function pull($name)
+    {
+        $server = $this->serverList[$name];
+        $localLocation = __DIR__;
+
+        $connection = $this->connect($server);
+
+        $this->output( "----------------------------------------", 2);
+        $this->output("Pulling down \"$name\" to directory $localLocation/.");
+        $this->output( "----------------------------------------");
+
+        if (count(@ftp_nlist($connection, $server['path'])) <= 2) {
+            throw new ExitApp("No files to pull! {$server['host']}{$server['path']} is empty.");
+        }
+
+        $localContents   = scandir($localLocation); 
+        $allowedContents = array('.', '..', rtrim(UTILS_DIRECTORY, '\/'), basename(__FILE__));
+        $disallowedContents = array_diff($localContents, $allowedContents);
+
+        if (count($disallowedContents) > 0) {
+            $this->output("The local directory $localLocation/ has extra files in it that could be overwritten.", 2);
+            $this->output("Please move or delete the following files or directories:");
+
+            foreach ($disallowedContents as $path) {
+                $append = is_dir($path) ? '/' : '';
+                $this->output("   " . $path . $append);
+            }
+
+            $this->output("Do you wish to delete the above files?", 2);
+            $response = strtolower(substr($this->getInput("  (y/n)"), 0, 1));
+
+            if ($response == 'n') throw new ExitApp();
+
+            $this->output("Caution! This action is not reversable. Are you sure?", 0);
+            $response = strtolower(substr($this->getInput("  (y/n)"), 0, 1));
+
+            if ($response == 'y') {
+                $this->output("Deleting files...", 2);
+                foreach ($disallowedContents as $path) {
+                    $this->cleandir($path, true, "   [clean] ");
+                }
+            } else { 
+                throw new ExitApp();
+            }
+        }
+
+        $this->output("Pulling files...", 2);
+
+        $success = $this->ftp_sync($connection, '.', "   [pull] ");
+        if (!$success) $this->output("Couldn't pull down {$server['host']}{$server['path']}. Ending...");
+
+        $this->output("Successfully pulled down {$server['host']}{$server['path']}. Add it to version control and use it with git-deploy!", 2);
+    }
+
+    /**
+     * Deploys files over FTP to a server.
+     *
+     * @param resource connection    An open FTP stream to deploy over.
+     * @param array server           An array of server configuration values.
+     * @param string remoteRevision  The server's currently uploaded revision. (Log purposes only.)
+     * @param string revision        The revision to deploy.
+     * @param string resumeFile      The path to the RESUME file.
+     */
+    protected function deployGitOverFtp($connection, $server, $remoteRevision, $revision, $resumeFilePath)
+    {
+        $resumeFile = @file($resumeFilePath);
+
+        $files = !$this->dryrun
+          ? $this->parseResumeFile($resumeFilePath)
+          : $this->getFileStatusList($remoteRevision, $revision, $server['clean_directories']);
+
+        $directoriesToClean = $server['clean_directories'];
+        $existingPaths = array();
+
+        $fileCount = count($files);
+        $uploadCount = $deleteCount = $cleanCount = 0;
+        $progressCount = $progressPercent = 0;
+
+        while (count($files) > 0) {
+            $file = array_pop($files);
+            $path = $file['path'];
+            $status = $file['status'];
+
+            $progressPercent = number_format($progressCount / $fileCount * 100, 1);
+            $progressPercent = str_pad($progressPercent, 5, " ", STR_PAD_LEFT) . "%";
+            $progressCount++;
+
+            if ($status == 'D') {
+                $action = 'Deleting';
+                $deleteCount++;
+            }
+            else if ($status == 'clean') {
+                $action = 'Cleaning';
+                $cleanCount++;
+            }
+            else {
+                $action = 'Uploading';
+                $uploadCount++;
+            }
+
+            $this->output("   " . "$progressPercent [$status] $action $path... ");
+
+            if ($this->dryrun) {
+                $this->output("Done.", 0);
+                continue;
+            }
+
+            $success = false;
+
+            if ($status == 'D') $success = ftp_delete($connection, $path);
+            else if ($status == 'clean') $success = $this->ftp_cleandir($connection, $path, false, "          [clean]   ");
+            else $success = $this->ftp_upload($connection, $revision, $path, $existingPaths);
+
+            if (!$success) throw new ExitApp("Failed to process $path. Terminating deployment.");
+
+            array_pop($resumeFile);
+            file_put_contents($resumeFilePath, implode($resumeFile));
+        }
+
+        $this->output("   " . "100.0% All files up to date.");
+
+        # We don't need this any more.
+        if (!$this->dryrun) unlink($resumeFilePath);
+    }
+
+    /**
+     * Creates an FTP connection to a server.
+     *
+     * @param array server  An array of server configuration values.
+     * @return resource     An open FTP stream.
+     */
+    protected function connect($server) {
+        $server['path'] = '/' . trim($server['path'], '\/') . '/';
+
+        $this->output("----------------------------------------", 2);
+        $this->output("Establishing connection to {$server['name']}.");
+        $this->output("----------------------------------------");
+
+        if (!$this->checkForInternet()) {
+            throw new ExitApp("No internet access. Check your connection to the internet and try again.");
+        }
+
+        if (!isset($server)) {
+            $message  = "A server with the identifier $name was not found in the config file!" . " "
+                      . "Check your spelling or add it to " . $this->getConfigFilePath() . ".";
+            throw new ExitApp($message);
+        }
+
+        $this->output("Starting connection to {$server['host']} on port {$server['port']}... ", 2);
+
+        $connection = @ftp_connect($server['host'], $server['port']);
+
+        if (!$connection) {
+          $this->output("Could not connect to {$server['host']}. Check your internet connection and login credentials.", 2);
+          return false;
+        }
+
+        $this->output("Done.", 0);
+        $this->output("Logging in with username {$server['user']} and password {$server['pass']}... ");
+
+        $loggedOn = @ftp_login($connection, $server['user'], $server['pass']);
+
+        if (!$loggedOn) {
+            $this->output("Could not login to {$server['host']} (Tried to login as {$server['user']}).", 2);
+            return false;
+        }
+
+        $this->output("Done", 0);
+
+        ftp_pasv($connection, $server['passive']);
+
+        $deployPath = $server['path'];
+        $this->output("Changing directory to $deployPath... ");
+
+        if (!@ftp_chdir($connection, $deployPath)) {
+            $success = $this->dryrun || (@ftp_mkdir($connection, $deployPath) && @ftp_chdir($connection, $deployPath));
+            if (!$success) {
+                throw new ExitApp("Could not change FTP directory to $deployPath.");
+            }
+        }
+
+        $this->output("Done.", 0);
+
+        return $connection;
+    }
+
+    public function updateSelf() {
+        $name = basename(__FILE__);
+        $tempName = "update.tmp";
+        $old = "old_script.tmp";
+
+        $this->output("Beginning update of \"$name\" from GitHub.", 2);
+        $this->output("Source url: " . GITHUB_SOURCE_URL);
+        $this->output("Fetching source... ", 2);
+
+        $haveInternet = $this->checkForInternet();       
+
+        if (!$haveInternet) {
+            $this->output("Failed.", 0);
+            throw new ExitApp("No internet connection available! Could not perform update.");
+        }
+
+        $content = file_get_contents(GITHUB_SOURCE_URL);
+        $success = file_put_contents($tempName, $content);
+
+        if (!$success) {
+            unlink($tempName);
+            $this->output("Failed.", 0);
+            throw new ExitApp("Update could not be fetched. Check if PHP has the php_openssl extension enabled.");
+        }
+
+        $this->output("Done.", 0);
+        $this->output("Swapping files...");
+        
+        rename($name, $old);
+        rename($tempName, $name);
+
+        $this->output("Done.", 0);
+        $this->output("Deleting temporary files... ");
+
+        unlink($old);
+
+        $this->output("Done.", 0);
+    }
+
+    /**
+     * Uploads a file over FTP.
+     *
+     * You can gain a performance boost by passing an array of directories
+     * known to exist as an argument. It is recommended you don't create this 
+     * yourself, but instead pass an empty array to this function the first time
+     * and continue passing it back each time you use ftp_upload(). However, if
+     * the state of any directories on the server changes, you should start again
+     * with an empty array so as not to throw errors.
+     *
+     * @param resource connection  An open FTP stream.
+     * @param string revision      The file revision to upload.
+     * @param string file          The path to the file to upload.
+     * @param array existingPaths  An optional array of paths known to exist.
+     * @return bool                True on success, else false.
+     */
+    protected function ftp_upload($connection, $revision, $file, &$existingPaths = array()) {
+        $directory = explode("/", dirname($file));
+        $path = '';
+
+        foreach ($directory as $subdirectory) {
+            $path .= $subdirectory . '/';
+
+            if (isset($existingPaths[$path])) continue;
+
+            $origin = ftp_pwd($connection);
+            $failure = !@ftp_chdir($connection, $path) && !@ftp_mkdir($connection, $path);
+
+            if ($failure) {
+                $this->output("Failed to create '$path'.");
+                throw new ExitApp("A problem occurred while attempting to create a folder. Terminating upload.");
+            }
+
+            $existingPaths[$path] = true;
+            ftp_chdir($connection, $origin);
+        }
+
+        $temp = tempnam($this->getUtilsDirectory(), "uploadFile");
+        $this->runGitCommand("git show $revision:\"$file\" > $temp");
+        $success = ftp_put($connection, $file, $temp, FTP_BINARY);
+        unlink($temp);
+
+        return $success;
+    }
+
+    /**
+     * Recursively downloads a remote directory to a local location over FTP.
+     *
+     * The local location will be relative the working directory when this
+     * function is called.
+     *
+     * Also note that when running this in dryrun mode, all local operations are
+     * suspended and assumed successful, for the sake of giving proper output without
+     * changing any files.
+     *
+     * @see http://www.php.net/manual/es/function.ftp-get.php#90910
+     *
+     * @param resource connection  The connection to download from.
+     * @param string path          The path to download.
+     * @param string indentString  A leading string used to format output.
+     * @return bool                True on success, else false.
+     */
+    protected function ftp_sync($connection, $path, $indentString = '')
+    { 
+        if ($path != ".") { 
+            if (!ftp_chdir($connection, $path)) {
+                $this->output("Failed to change directory to $path.", 2);
+                return false; 
+            }
+
+            if (!$this->dryrun) {
+                if (!is_dir($dir)) mkdir($path); 
+                chdir($path);
+            }
+        } 
+
+        $fileList = ftp_nlist($connection, "."); 
+
+        if ($path != ".") {
+            $this->output(substr($indentString, 0, -3) . $path);
+            if (count($fileList) >= 2) $this->output('/', 0);
+        }
+
+        foreach ($fileList as $file) { 
+            if ($file == '.' || $file == '..') continue; 
+            if ($this->matchFile("git-deploy*", $file)) continue;
+            if ($this->matchFile(basename(__FILE__) . "*", $file)) continue;
+            if ($this->matchFile(IGNORE_FILE, $file)) continue;
+            if ($this->matchFile(REVISION_FILE, $file)) continue;
+
+            if (@ftp_chdir($connection, $file)) { 
+                ftp_chdir($connection, ".."); 
+                $this->ftp_sync($connection, $file, $indentString . "   "); 
+            } else {
+                $this->output($indentString . $file);
+                if (!$this->dryrun) ftp_get($connection, $file, $file, FTP_BINARY);
+            }
+        } 
+
+        ftp_chdir($connection, ".."); 
+        if (!$this->dryrun) chdir(".."); 
+
+        return true;
+    } 
+
+    /**
+     * Clean (and optionally remove) a whole directory recursively over FTP.
+     *
+     * Recursively steps through a directory, deleting files and subfolders
+     * contained within. This method by default won't remove the directory after
+     * cleaning it, but that behaviour can be changed by setting $remove to true.
+     * This method could theoretically be used to delete a single file by setting
+     * the path to point to a file and setting $remove to true, but that is not its
+     * purpose and it would only function as a less-efficient wrapper for ftp_delete().
+     *
+     * @param   resource connection  The link identifier of the FTP connection.
+     * @param   string path          The path to clean.
+     * @param   bool remove          Optionally whether to remove the directory after cleaning.
+     * @param   string indentString  A leading string used to format output.
+     * @return  bool                 True for success, else false.
+     */
+    protected function ftp_cleandir($connection, $path, $remove = false, $indentString = '')
+    {
+      $success = true;
+      $fileList = @ftp_nlist($connection, $path);
+
+      # Don't output if path is an empty directory that won't be removed.
+      if (count($fileList) != 2 || $remove) {
+          $this->output($indentString . basename($path));
+          if (count($fileList) >= 2) $this->output('/', 0);
+      }
+
+      foreach ($fileList as $file) {
+          $file = rtrim($path, '\/') . '/' . $file;
+          if (basename($file) == basename($path)) continue;
+          if (basename($file) == '.' || basename($file) == '..') continue;
+          $success = $success && $this->ftp_cleandir($connection, $file, true, $indentString . "   ");
+      }
+
+      if ($remove) {
+          if ($this->dryrun || @ftp_rmdir($connection, $path) || @ftp_delete($connection, $path)) {
+              return true;
+          }
+          return false;
+      }
+
+      return $success;
+    }
+
+    /**
+     * A locally operating version of ftp_cleandir().
+     *
+     * @param   string path          The path to clean.
+     * @param   bool remove          Optionally whether to remove the directory after cleaning.
+     * @param   string indentString  A leading string used to format output.
+     * @return  bool                 True for success, else false.
+     */
+    protected function cleandir($path, $remove = false, $indentString = '')
+    {
+      $success = true;
+      $fileList = @scandir($path);
+
+      # Don't output if path is an empty directory that won't be removed.
+      if (count($fileList) != 2 || $remove) {
+          $this->output($indentString . basename($path));
+          if (count($fileList) >= 2) $this->output('/', 0);
+      }
+
+      if ($fileList) {
+          foreach ($fileList as $file) {
+              $file = rtrim($path, '\/') . '/' . $file;
+              if (basename($file) == '.' || basename($file) == '..') continue;
+              $success = $success && $this->cleandir($file, true, $indentString . "   ");
+          }
+      }
+
+      if ($remove) {
+          if ($this->dryrun || @rmdir($path) || @unlink($path)) {
+              return true;
+          }
+          return false;
+      }
+
+      return $success;
+    }
+
+    /**
+     * Uploads a file containing the deployed revision and stores a copy locally.
+     *
+     * This is used for tracking purposes so that git-deploy knows which revision
+     * to git-diff against when deploying a commit. The local copy is used with the
+     * --list command.
+     *
+     * @param resource connection  An open FTP stream.
+     * @param string server        An array of server configuration values.
+     * @param string hash          The SHA-1 hash of the revision to remember.
+     */
+    protected function storeRevisionHash($connection, $server, $hash)
+    {
+        $this->output("   " . "Uploading REVISION file... ");
+
+        if (!$this->dryrun) {
+            $temp = tempnam(sys_get_temp_dir(), 'gitRevision');
+            file_put_contents($temp, $hash);
+            ftp_put($connection, REVISION_FILE, $temp, FTP_BINARY);
+            unlink($temp);
+        }
+
+        $this->output("Done.", 0);
+        $this->output("   " . "Storing REVISION file locally... ");
+
+        $localRevisionPath = $this->getRemoteRevisionLocalFilePath($server['name']);
+        if (!$this->dryrun) file_put_contents($localRevisionPath, $hash);
+
+        $this->output("Done.", 0);
+        $this->output("You can find the local copy of the REVISION file at $localRevisionPath.", 2);
+    }
+
+    /**
+     * Returns the revision currently deployed on the connected server.
+     *
+     * @param   resource connection  An open FTP stream.
+     * @return  string               The fetched revision.
+     */
+    protected function getRemoteRevision($connection)
+    {
+        $temp = tmpfile();
+
+        $remoteRevision = @ftp_fget($connection, $temp, REVISION_FILE, FTP_ASCII)
+          ? file_get_contents(stream_get_meta_data($temp)['uri'])
+          : NULL;
+
+        fclose($temp);
+
+        return $remoteRevision;
+    }
+
+    /**
+     * Runs a git command and returns true on success.
+     *
+     * This file first redirects the command's output stream in case of an error
+     * to the standard output (instead of standard error), preventing it from printing
+     * git errors. (This is done by appending "2>&1" to the command.) Git fatal errors
+     * start with the text 'fatal:', so testing for this is how success is determined.
+     *
+     * @see http://stackoverflow.com/a/5602987/1270419 for output redirection.
+     *
+     * @param string command  The git command to execute.
+     * @param array output    Container for command output.
+     * @return string         The last line of output returned by exec().
+     */
+    protected function runGitCommand($command, &$output = array())
+    {
+        # Make sure git errors go to standard output, not standard error.
+        $return = exec($command . " 2>&1", $output);
+
+        if (substr($output[0], 0, 6) == 'fatal:') { 
+            $message = "A git command returned a fatal error. Output:" . PHP_EOL . PHP_EOL . implode(PHP_EOL, $output);
+            throw new ExitApp($message);
+        }
+
+        return $return;
+    }
+
+    /**
+     * Match a filename against a pattern. Uses fnmatch(), or regex if enabled.
+     *
+     * @param string pattern  The pattern to match with.
+     * @param string file     The filepath to match against.
+     * @param bool regex      Whether to treat the pattern as a regex or not.
+     * @return bool           True if the file is a match.
+     */
+    protected function matchFile($pattern, $file, $regex = false)
+    {
+        if ($regex) return (boolean)preg_match($pattern, $file);
+
+        $lastChar = substr($pattern, -1);
+        $firstChar = substr($pattern, 0, 1);
+
+        # Match contents if directory, and be more liberal if not relative filepath.
+        if ($lastChar == '/' || $lastChar == '\\') $pattern .= '**';
+        if ($firstChar != '/') $pattern = '**' . $pattern;
+        else $pattern = substr($pattern, 1);
+
+        return pcre_fnmatch($pattern, $file, FNM_PATHNAME | FNM_DOUBLESTAR | FNM_ALLOWSPACES);
+    }
+
+    /**
+     * Returns the contents of the specified RESUME file.
+     *
+     * The contents will be formatted in filepath-status pairs, one pair
+     * per indice in the returned array. The parsing process consists of
+     * fetching each line in the RESUME file and exploding it into two elements
+     * on the space delimiter. The first returned component is the status, and the
+     * second is the path.
+     *
+     * @param string path  The path to the resume file.
+     * @return array       The parsed contents, or false on failure.
+     */
+    protected function parseResumeFile($path)
+    {
+        $files = array();
+        $fileContents = @file($path);
+
+        if (!$fileContents) return false;
+
+        foreach(array_slice($fileContents, 1) as $line) {
+            $components = explode(' ', trim($line), 2);
+            $status = $components[0];
+            $path = $components[1];
+
+            $files[] = array('path' => $path, 'status' => $status);
+        }
+
+        return $files;
+    }
+
+    /**
+     * Outputs a message to the console and optionall logs it to a file.
+     *
+     * If $this->print is set to true, $message will be output to the command line.
+     * Likewise, if $this->log is set to false, $message will be ouput to a log file.
+     * Both settings will be ignored if $this->disableOutput is true. 
+     *
+     * The differences between console and log output are:
+     *   > Console output can contain more than one newline before the message.
+     *   > Log output contains timestamps on every message, unless the message is on the same
+     *     line as the last.
+     *
+     * @param string message    The message to output.
+     * @param int jumpLines     The number of lines to move down before outputting the message.
+     * @param string buffer     An optional buffer to send output to instead of the log file.
+     * @param bool forceSilent  Whether to force command line output to be off for just this call.
+     */
+    public function output($message, $jumpLines = 1, &$buffer = NULL, $forceSilent = false)
+    {
+        if ($this->disableOutput || empty($message)) return;
+
+        # Normalize filepaths.
+        $message = str_replace('\\', '/', $message);
+
+        if ($this->print && !$forceSilent) {
+            for ($i = 0; $i < $jumpLines; $i++)  print(PHP_EOL);
+            print($message);
+        }
+
+        if ($this->log) {
+            if ($jumpLines > 0) {
+                $date = "[" . date('Y-m-d H:i:s') . "]    ";
+                $message = PHP_EOL . $date . $message;
+            }
+
+            if (isset($buffer)) $buffer .= $message;
+            else @file_put_contents($this->logFile, $message, FILE_APPEND | LOCK_EX);
+        }
+    }
+
+    /**
+     * Dumps the contents of the given buffer to a log and clears the buffer.
+     *
+     * @param string buffer  The buffer to dump and clear.
+     */
+    protected function dumpBuffer(&$buffer) {
+        file_put_contents($this->logFile, $buffer, FILE_APPEND | LOCK_EX);
+        $buffer = '';
+    }
+
+    /**
+     * Read in user input on the command line.
+     *
+     * @see http://www.php-trivandrum.org/code-snippets/user-input-in-php-command-line/
+     *
+     * @param string message  A message prompt for the user.
+     * @param int newLines    The number of newlines to insert before the message.
+     * @return string         The user's response.
+     */
+    protected function getInput($message, $newlines = 0)
+    {
+        fwrite(STDOUT, str_repeat("\n", $newlines) . $message);
+        $input = trim(fgets(STDIN));
+
+        # For log purposes.
+        $printState = $this->print;
+        $this->print = false;
+        $this->output("$message: $input", $newLines);
+        $this->print = $printState;
+
+        return $input;
+    }
+    
+    /**
+     * Checks for internet connection by pinging Google.
+     *
+     * This could theoretically give a false negative (i.e. there is internet but Google
+     * is down), but the chances of that are almost zero.
+     *
+     * @return bool  True if there is an internet connection.
+     */
+    protected function checkForInternet()
+    {
+        $connected = @fsockopen("www.google.com", 80);
+        $isConnected = $connected ? true : false;
+
+        if ($isConnected) fclose($connected);
+
+        return $isConnected;
+    }
+
+    /**
+     * Returns the path to the utilities directory.
+     *
+     * This directory contains all files related to git-deploy
+     * other than the script itself. This includes log files,
+     * deployment files, and local copies of revision files.
+     *
+     * @return string  The path to the utitilies directory.
+     */
+    protected function getUtilsDirectory()
+    {
+        $command = "git rev-parse --show-cdup";
+        $inRepository = true;
+
+        # Check if inside git repo by catching fatal git error.
+        try { $this->runGitCommand($command); }
+        catch (ExitApp $ea) { $inRepository = false; }
+
+        $path = '';
+        if ($inRepository) $path = realpath(__DIR__ . '/' . $this->runGitCommand($command) . UTILS_DIRECTORY) . '/';
+        else $path = __DIR__ . '/' . UTILS_DIRECTORY;
+
+        return $path;
+    }
+
+    /**
+     * Returns the path to the configuration file.
+     * 
+     * @return string     The path to the configuration file.
+     */
+    protected function getConfigFilePath()
+    {
+        return $this->getUtilsDirectory() . CONFIG_FILE;
+    }
+
+    /**
+     * Returns the path to the ignore file.
+     * 
+     * @return string     The path to the ignore file.
+     */
+    protected function getIgnoreFilePath()
+    {
+        return $this->getUtilsDirectory() . IGNORE_FILE;
+    }
+
+    /**
+     * Returns the path to the log storage directory.
+     *
+     * @return string  The path to the log storage directory.
+     */
+    protected function getLogDirectory()
+    {
+        return $this->getUtilsDirectory() . LOG_DIRECTORY;
+    }
+
+    /**
+     * Returns a valid log file path.
+     *
+     * LOG_FILE_BASENAME contains a # mark where the unique identifier is inserted.
+     * This means that deploy-log-#.log with an identifier of 1094 becomes deploy-log-1094.log.
+     *
+     * @param string identifier  A unique string to identify the revision file.
+     * @return string            A valid log file path with the identifier included.
+     */
+    protected function getLogFilePath($identifier)
+    {
+        return $this->getLogDirectory() . str_replace('#', $identifier, LOG_FILE_BASENAME);
+    }
+
+    /**
+     * Returns the path to a copy of the last deployment's revision file. 
+     *
+     * @param string identifier  A unique string to identify the revision file.
+     * @return string            The path to the copy of the last revision file.
+     */
+    protected function getRemoteRevisionLocalFilePath($identifier)
+    {
+        return $this->getUtilsDirectory() . LOCAL_REVISION_FILE_BASENAME . $identifier;
+    }
+
+    /**
+     * Returns the path to the resume file.
+     *
+     * @param string identifier  A unique string to identify the resume file.
+     * @return string            The path to the resume file.
+     */
+    protected function getResumeFilePath($identifier)
+    {
+        return $this->getUtilsDirectory() . RESUME_FILE_BASENAME . $identifier;
+    }
 }
