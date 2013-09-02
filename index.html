@@ -1,0 +1,206 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="chrome=1">
+    <title>Git-deploy-ftp by ConnorKrammer</title>
+
+    <link rel="stylesheet" href="stylesheets/styles.css">
+    <link rel="stylesheet" href="stylesheets/pygment_trac.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <!--[if lt IE 9]>
+    <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1>Git-deploy-ftp</h1>
+        <p>git-deploy-php is a simple php-based tool that deploys your Git repositories to FTP servers, and keeps them updated automatically.</p>
+
+        <p class="view"><a href="https://github.com/ConnorKrammer/git-deploy-ftp">View the Project on GitHub <small>ConnorKrammer/git-deploy-ftp</small></a></p>
+
+
+        <ul>
+          <li><a href="https://github.com/ConnorKrammer/git-deploy-ftp/zipball/master">Download <strong>ZIP File</strong></a></li>
+          <li><a href="https://github.com/ConnorKrammer/git-deploy-ftp/tarball/master">Download <strong>TAR Ball</strong></a></li>
+          <li><a href="https://github.com/ConnorKrammer/git-deploy-ftp">View On <strong>GitHub</strong></a></li>
+        </ul>
+      </header>
+      <section>
+        <h1>
+<a name="git-deploy" class="anchor" href="#git-deploy"><span class="octicon octicon-link"></span></a>Git-Deploy</h1>
+
+<p>Deploys a local git repository quickly and easily onto a remote server via FTP.</p>
+
+<p>Git-deploy only requires FTP access, no SSH, so it will work even on the most restrictive of shared hosting plans. It supports both pushing and pulling, so if you already have something deployed it's simple to pull it down, put it under version control, and deploy it again! Even better, when pushing up to the server only changed files are uploaded. You save both bandwidth and time.</p>
+
+<p>And best of all, it's quick, simple, and user-friendly. You just have to know how to open up the command line.</p>
+
+<h2>
+<a name="features" class="anchor" href="#features"><span class="octicon octicon-link"></span></a>Features</h2>
+
+<ul>
+<li> Quickly push and pull changes to a remote server.</li>
+<li> List files to be changed for any given commit.</li>
+<li> Only uploading changed files.</li>
+<li> A <code>--dry-run</code> flag to test out a command before doing it for real.</li>
+<li> Simple deployment ignore file, just like .gitignore. You can even turn on regex if you need it.</li>
+<li> Session resuming.</li>
+<li> Super-quick setup and deployment.</li>
+<li> Deploy any branch and any revision without checking them out or having to revert your git repository first.</li>
+<li> Very well documented. There's no guessing at what a command does.</li>
+<li> <code>--update-self</code> command, to update to the latest version of the script from GitHub.</li>
+<li> Renaming support for the <code>git-deploy</code> file.</li>
+<li> Tagging servers. Then choose to deploy only to specific tags, such as <code>development</code> or <code>production</code>.</li>
+</ul><h2>
+<a name="usage" class="anchor" href="#usage"><span class="octicon octicon-link"></span></a>Usage:</h2>
+
+<p>Using git-deploy for the first time doesn't take a lot of work.</p>
+
+<ol>
+<li>Drop <code>git-deploy</code> into your project.</li>
+<li>Run <code>php git-deploy --setup</code>
+</li>
+<li>Fill in <code>deploy-config.ini</code>. When you're done, execute <code>php git-deploy</code> to deploy your changes.</li>
+</ol><p>Super simple.</p>
+
+<p>And later, pushing changes is as easy as running <code>php git-deploy</code> once more. You're done!</p>
+
+<h4>
+<a name="configuration" class="anchor" href="#configuration"><span class="octicon octicon-link"></span></a>Configuration</h4>
+
+<p>The configuration progess is pretty simple and the default config file walks you through it. The only thing to note is that if you have your project deployed already and want to upload a new revision, you'll either have to clean the remote location first and upload from scratch, or upload a file named <code>REVISION</code> containing the SHA-1 hash of the currently uploaded revision. There's a convenience command to do this for you: First your server in <code>deploy-config.ini</code>, then run <code>php git-deploy --make-revfile=&lt;identifier&gt;</code>. You'll be prompted for the revision to set, and it'll be automatically uploaded for you.</p>
+
+<p>If you don't know what revision the server is on (but you know how many commits back it is from HEAD), running <code>git rev-parse --short HEAD~&lt;number of commits back&gt;</code> will return the SHA-1 hash for that commit, on the current branch. More on that <a href="http://git-scm.com/book/ch6-1.html">here</a>. In particular, check out <a href="http://git-scm.com/book/ch6-1.html#Ancestry-References">this section</a> on ancestry references. The basic guideline is below:</p>
+
+<ol>
+<li>
+<code>HEAD~n</code> returns the ancestor of the current branch <code>n</code> number of steps back from <code>HEAD</code> on the current branch.</li>
+<li>
+<code>branch~n</code> is like <code>HEAD~n</code>, but it works relative the tip of <code>branch</code>.</li>
+</ol><h4>
+<a name="ignoring-files" class="anchor" href="#ignoring-files"><span class="octicon octicon-link"></span></a>Ignoring Files</h4>
+
+<p>After running <code>--setup</code> you'll notice a file called <code>.deployignore</code>. It works similarly to a <code>.gitignore</code> file, except that it excludes files from being uploaded (and it supports optional regex patters!). You'll find more information in the default file.</p>
+
+<h2>
+<a name="additional-usage" class="anchor" href="#additional-usage"><span class="octicon octicon-link"></span></a>Additional Usage:</h2>
+
+<p>Git-deploy has a lot of user-friendly functionality built in. Command line arguments don't take long, complicated inputs, and git-deploy strives to make sure you don't break anything unintentionally. That means that if you pass a dangerous argument, or two that don't make sense together, git-deploy will stop and ask you what to do. The last thing you want is your hard work accidentally deleted!</p>
+
+<p>If you're afraid of wrecking something on your server, run git-deploy with the <code>--dry-run</code> flag turned on. Dry run mode won't run any commands that change files, but will still log output as if it were operating normally. This lets you know exactly what would change if you were to run that command without <code>--dry-run</code> turned on.</p>
+
+<p>Git-deploy doesn't have to be called via <code>php git-deploy</code> either. You can safely rename the script and it will still operate correctly.</p>
+
+<h2>
+<a name="setup" class="anchor" href="#setup"><span class="octicon octicon-link"></span></a>Setup:</h2>
+
+<p>Git-deploy only has two requirements.</p>
+
+<ol>
+<li>Git.</li>
+<li>PHP &gt;= 5.3 available from the command line.</li>
+</ol><p>Simply place git-deploy in the root directory of your git repository and run:</p>
+
+<pre><code>php git-deploy --setup
+</code></pre>
+
+<p>This will create all needed files under the .deploy/ directory. Once that is complete, you can edit the deploy-config.ini file found inside with the appropriate values. The file is well-commented, so it shouldn't be too hard.</p>
+
+<p>If the configuration file is ever mangled or broken, removing it and re-running <code>--setup</code> will restore it to its default state. If git-deploy is run and no configuration file is found, the script will ask you to either create it yourself or to run --setup again.</p>
+
+<h2>
+<a name="command-line" class="anchor" href="#command-line"><span class="octicon octicon-link"></span></a>Command line:</h2>
+
+<h4>
+<a name="syntax" class="anchor" href="#syntax"><span class="octicon octicon-link"></span></a>Syntax</h4>
+
+<p>The syntax isn't complicated.</p>
+
+<pre><code>php git-deploy [&lt;tree-ish&gt;] [flags]
+</code></pre>
+
+<p>Make sure to specify the <code>[&lt;tree-ish&gt;'</code> command first, so it doesn't get parsed as an argument to one of the flags.</p>
+
+<pre><code>php git-deploy HEAD~1 -csn --only testserver
+</code></pre>
+
+<p>...which will clean the upload directory of the server identified by 'testserver' (as configured in <code>deploy-config.ini</code>) without logging or printing output.</p>
+
+<h4>
+<a name="flagless-arguments" class="anchor" href="#flagless-arguments"><span class="octicon octicon-link"></span></a>Flagless Arguments</h4>
+
+<p><code>[&lt;tree-ish&gt;]</code><br>
+Specify the revision to deploy. You can use any format recognizable by <code>git-diff</code> (hash, tag, etc). Defaults to HEAD of the current branch if not specified.  Note that files matching the following patterns will not be deployed for security reasons: <code>git-deploy*</code>, <code>.deploy/</code>, and a match for the script's curent name. (In case of rename.)</p>
+
+<h4>
+<a name="commands" class="anchor" href="#commands"><span class="octicon octicon-link"></span></a>Commands</h4>
+
+<p><code>--setup</code><br>
+Run setup.</p>
+
+<p><code>-c</code><br><code>--clean</code><br>
+Completely clear out the upload directory.</p>
+
+<p><code>-l</code><br><code>--list</code><br>
+List files to upload or delete.</p>
+
+<p><code>-p=&lt;identifier&gt;</code><br><code>--pull=&lt;identifier&gt;</code><br>
+Pull contents down from the server specified with the given identifier into the directory of the git-deploy script. Useful for putting an existing deployment under version control for the first time. (Just run <code>--pull=&lt;identifier&gt;</code>, <code>git add -A</code>, <code>git commit</code> and you're done!) Certain files or directories are excluded from being pulled. These include anything that match the patterns <code>git-deploy*</code>, <code>.deploy/</code>, or <code>REVISION</code>. If the file is named the same as this script (in case you renamed it from git-deploy), it will not be pulled down either. (Pattern: <code>basename(__FILE__)*</code>)</p>
+
+<p><code>-u</code><br><code>--update-self</code><br>
+Fetch a newer copy of this script if it exists on GitHub and update to it. This script will keep its name, so even if it isn't named <code>git-deploy</code> this command (like all the others) will still work.</p>
+
+<p><code>-m=&lt;identifier&gt;</code>
+<code>--make-revfile=&lt;identifier&gt;</code>
+Uploads a REVISION file to the server with the configured identifier. This is basically only useful for first-time setup, where you might already have code uploaded but without a REVISION file to identify the currently deployed revision to git-deploy. In that case you can run <code>--make-revfile</code> and pass the identifier of the server you want to upload the REVISION file to. You'll be prompted during upload for the revision hash/tag/etc. to set.</p>
+
+<p><code>-o=&lt;identifier-list&gt;</code><br><code>--only=&lt;identifier-list&gt;</code><br>
+Only run git-deploy on the servers with the given identifiers in the config file. If more than one is specified, they should be enclosed in quote characters and space delineated.</p>
+
+<p><code>-t=&lt;taglist&gt;</code>
+<code>--tagged-with=&lt;taglist&gt;</code>
+Deploys only to servers tagged with the given identifiers in <code>deploy-config.ini</code>. If more than one tag is specified, the list should be enclosed in quotes and space-delineated. A server only has to have one tag in the list in order to be deployed, but you can specifically exlude certain tags by prefixing the tag with an exclamation mark. <strong><em>Note that <code>--tagged-with</code> will not override <code>--only</code>. If both <code>--only</code> and <code>--tagged-with</code> are specified, a server must match both to be included.</em></strong></p>
+
+<p><code>-s</code><br><code>--silent</code><br>
+Silence command line output.</p>
+
+<p><code>-n</code><br><code>--nolog</code><br>
+Do not create a log file.</p>
+
+<p><code>-d</code><br><code>--dry-run</code><br>
+Run a command without changing local or remote files, but log results as if the command were actually being run.
+Overrides <code>--silent</code>, but not <code>--nolog</code>.</p>
+
+<p><code>-r</code><br><code>--resume-only</code><br>
+If a RESUME file exists for a given server, only resume the upload and do not continue with a new one.</p>
+
+<p><code>-f</code><br><code>--show-filtered</code><br>
+Show which files are excluded from upload, and by which exclude pattern. Useful for debugging the .deployignore file.</p>
+
+<h2>
+<a name="how-does-it-work" class="anchor" href="#how-does-it-work"><span class="octicon octicon-link"></span></a>How does it work?</h2>
+
+<p>Git-deploy stores file called REVISION on your server inside the root path to your application. This file stores the current revision of your application residing on your server.</p>
+
+<p>When you run a git deploy, git-deploy downloads the REVISION file, and checks to see what files are different between revisions and either upload the changed files or deletes them from the server.</p>
+
+<h2>
+<a name="suggestiongs-questions-and-complaints" class="anchor" href="#suggestiongs-questions-and-complaints"><span class="octicon octicon-link"></span></a>Suggestiongs, questions, and complaints.</h2>
+
+<h4>
+<a name="create-an-issue" class="anchor" href="#create-an-issue"><span class="octicon octicon-link"></span></a><a href="https://github.com/ConnorKrammer/git-deploy-php/issues">Create an issue!</a>
+</h4>
+
+<p>Feel free to contribute! The source code is pretty clean and easy to go through, even if your PHP skills aren't that great. I've documented it more than strictly necessary for exactly that reason -- so get cracking! No pull request is too small.</p>
+      </section>
+      <footer>
+        <p>This project is maintained by <a href="https://github.com/ConnorKrammer">ConnorKrammer</a></p>
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="javascripts/scale.fix.js"></script>
+    
+  </body>
+</html>
