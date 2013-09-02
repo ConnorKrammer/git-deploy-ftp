@@ -848,7 +848,7 @@ class Terra_Git {
 
         $output = array();
         $command = empty($oldRevision) 
-          ? "git ls-files --with-tree=$revision" 
+          ? "git ls-tree -r --name-only $revision" 
           : "git diff --name-status $oldRevision $revision";
 
         $this->runGitCommand($command, $output);

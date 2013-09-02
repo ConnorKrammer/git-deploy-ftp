@@ -18,12 +18,13 @@ Super simple.
 
 And if you want to update to the latest revision, just run `php git-deploy` once more. You're done!
 
-__*Note that git-deploy will always operate with the current branch. Put in a feature request if you want the ability to specify branches other than the checked out one!*__
-
 #### Configuration
 The configuration progess is pretty simple and the default config file walks you through it. The only thing to note is that if you have your project deployed already and want to upload a new revision, you'll either have to clean the remote location first and upload from scratch, or upload a file named `REVISION` containing the SHA-1 hash of the currently uploaded revision. There's a convenience command to do this for you: First your server in `deploy-config.ini`, then run `php git-deploy --make-revfile=<identifier>`. You'll be prompted for the revision to set, and it'll be automatically uploaded for you.
 
-If you don't know what revision the server is on (but you know how many commits back it is from HEAD), running `git rev-parse --short HEAD~<number of commits back>` will return the SHA-1 hash for that commit. More on that [here](http://git-scm.com/book/ch6-1.html).
+If you don't know what revision the server is on (but you know how many commits back it is from HEAD), running `git rev-parse --short HEAD~<number of commits back>` will return the SHA-1 hash for that commit, on the current branch. More on that [here](http://git-scm.com/book/ch6-1.html). In particular, check out [this section](http://git-scm.com/book/ch6-1.html#Ancestry-References) on ancestry references. The basic guideline is below:
+
+1. `HEAD~n` returns the ancestor of the current branch `n` number of steps back from HEAD on the current branch.
+2. `branch~n` is like `HEAD~n`, but it works relative the tip of `branch`.
 
 #### Ignoring Files
 After running `--setup` you'll notice a file called `.deployignore`. It works similarly to a `.gitignore` file, except that it excludes files from being uploaded (and it supports optional regex patters!). You'll find more information in the default file.
