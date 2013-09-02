@@ -6,37 +6,50 @@ Git-deploy only requires FTP access, no SSH, so it will work even on the most re
 
 And best of all, it's quick, simple, and user-friendly. You just have to know how to open up the command line.
 
+Features
+--------
+*  Quickly push and pull changes to a remote server.
+*  List files to be changed for any given commit.
+*  Only uploading changed files.
+*  A `--dry-run` flag to test out a command before doing it for real.
+*  Simple deployment ignore file, just like .gitignore. You can even turn on regex if you need it.
+*  Session resuming.
+*  Super-quick setup and deployment.
+*  Deploy any branch and any revision without checking them out or having to revert your git repository first.
+*  Very well documented. There's no guessing at what a command does.
+*  `--update-self` command, to update to the latest version of the script from GitHub.
+*  Renaming support for the `git-deploy` file.
+*  Tagging servers. Then choose to deploy only to specific tags, such as `development` or `production`.
+
 Usage:
 ------
 Using git-deploy for the first time doesn't take a lot of work.
 
-1. Drip `git-deploy into your project.
+1. Drop `git-deploy` into your project.
 2. Run `php git-deploy --setup`
-3. Fill in `deploy-config.ini` and execute `php git-deploy`.
+3. Fill in `deploy-config.ini`. When you're done, execute `php git-deploy` to deploy your changes.
 
 Super simple.
 
-And if you want to update to the latest revision, just run `php git-deploy` once more. You're done!
+And later, pushing changes is as easy as running `php git-deploy` once more. You're done!
 
 #### Configuration
 The configuration progess is pretty simple and the default config file walks you through it. The only thing to note is that if you have your project deployed already and want to upload a new revision, you'll either have to clean the remote location first and upload from scratch, or upload a file named `REVISION` containing the SHA-1 hash of the currently uploaded revision. There's a convenience command to do this for you: First your server in `deploy-config.ini`, then run `php git-deploy --make-revfile=<identifier>`. You'll be prompted for the revision to set, and it'll be automatically uploaded for you.
 
 If you don't know what revision the server is on (but you know how many commits back it is from HEAD), running `git rev-parse --short HEAD~<number of commits back>` will return the SHA-1 hash for that commit, on the current branch. More on that [here](http://git-scm.com/book/ch6-1.html). In particular, check out [this section](http://git-scm.com/book/ch6-1.html#Ancestry-References) on ancestry references. The basic guideline is below:
 
-1. `HEAD~n` returns the ancestor of the current branch `n` number of steps back from HEAD on the current branch.
+1. `HEAD~n` returns the ancestor of the current branch `n` number of steps back from `HEAD` on the current branch.
 2. `branch~n` is like `HEAD~n`, but it works relative the tip of `branch`.
 
 #### Ignoring Files
 After running `--setup` you'll notice a file called `.deployignore`. It works similarly to a `.gitignore` file, except that it excludes files from being uploaded (and it supports optional regex patters!). You'll find more information in the default file.
 
-Advanced Usage:
+Additional Usage:
 ---------------
 
 Git-deploy has a lot of user-friendly functionality built in. Command line arguments don't take long, complicated inputs, and git-deploy strives to make sure you don't break anything unintentionally. That means that if you pass a dangerous argument, or two that don't make sense together, git-deploy will stop and ask you what to do. The last thing you want is your hard work accidentally deleted!
 
 If you're afraid of wrecking something on your server, run git-deploy with the `--dry-run` flag turned on. Dry run mode won't run any commands that change files, but will still log output as if it were operating normally. This lets you know exactly what would change if you were to run that command without `--dry-run` turned on.
-
-Other useful commands are available, such as `--clean`, `--only`, or `--list`. These are all documented below, and in the source code if you don't mind taking a look. (I'd recommend it -- everything is well documented!) There's even a command for updating git-deploy to the latest version from GitHub, hassle-free.
 
 Git-deploy doesn't have to be called via `php git-deploy` either. You can safely rename the script and it will still operate correctly.
 
@@ -49,7 +62,7 @@ Git-deploy only has two requirements.
 
 Simply place git-deploy in the root directory of your git repository and run:
 
-`$ php git-deploy --setup`
+    php git-deploy --setup
 
 This will create all needed files under the .deploy/ directory. Once that is complete, you can edit the deploy-config.ini file found inside with the appropriate values. The file is well-commented, so it shouldn't be too hard.
 
@@ -62,7 +75,7 @@ The syntax isn't complicated.
 
     php git-deploy [<tree-ish>] [flags]
 
-It makes the most sense to specify the revision/tree argument first, but the order doesn't really matter. The short syntax form can be strung together like this:
+Make sure to specify the `[<tree-ish>'` command first, so it doesn't get parsed as an argument to one of the flags.
 
     php git-deploy HEAD~1 -csn --only testserver
 
@@ -93,12 +106,18 @@ Pull contents down from the server specified with the given identifier into the 
 `--update-self`  
 Fetch a newer copy of this script if it exists on GitHub and update to it. This script will keep its name, so even if it isn't named `git-deploy` this command (like all the others) will still work.
 
--m=<identifier>
---make-revfile=<identifier>
+`-m=<identifier>`
+`--make-revfile=<identifier>`
 Uploads a REVISION file to the server with the configured identifier. This is basically only useful for first-time setup, where you might already have code uploaded but without a REVISION file to identify the currently deployed revision to git-deploy. In that case you can run `--make-revfile` and pass the identifier of the server you want to upload the REVISION file to. You'll be prompted during upload for the revision hash/tag/etc. to set.
 
+`-o=<identifier-list>`  
+`--only=<identifier-list>`  
+Only run git-deploy on the servers with the given identifiers in the config file. If more than one is specified, they should be enclosed in quote characters and space delineated.
 
-#### Options
+`-t=<taglist>`
+`--tagged-with=<taglist>`
+Deploys only to servers tagged with the given identifiers in `deploy-config.ini`. If more than one tag is specified, the list should be enclosed in quotes and space-delineated. A server only has to have one tag in the list in order to be deployed, but you can specifically exlude certain tags by prefixing the tag with an exclamation mark. __*Note that `--tagged-with` will not override `--only`. If both `--only` and `--tagged-with` are specified, a server must match both to be included.*__
+
 `-s`  
 `--silent`  
 Silence command line output.
@@ -116,10 +135,6 @@ Overrides `--silent`, but not `--nolog`.
 `--resume-only`  
 If a RESUME file exists for a given server, only resume the upload and do not continue with a new one.
 
-`-o=<identifier-list>`  
-`--only=<identifier-list>`  
-Only run git-deploy on the servers with the given identifiers in the config file. If more than one is specified, they should be enclosed in quote characters and space delineated.
-
 `-f`  
 `--show-filtered`  
 Show which files are excluded from upload, and by which exclude pattern. Useful for debugging the .deployignore file.
@@ -134,4 +149,4 @@ Suggestiongs, questions, and complaints.
 ----------------------------------------
 #### [Create an issue!](https://github.com/ConnorKrammer/git-deploy-php/issues)
 
-Feel free to contribute! The source code is pretty clean and easy to get through, even if your PHP skills aren't that great. I've documented it slightly more than strictly necessary for exactly that reason -- so get cracking! No pull request is too small.
+Feel free to contribute! The source code is pretty clean and easy to go through, even if your PHP skills aren't that great. I've documented it more than strictly necessary for exactly that reason -- so get cracking! No pull request is too small.

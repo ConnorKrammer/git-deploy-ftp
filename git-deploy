@@ -51,14 +51,16 @@ $silent       = isset($options['s']) || isset($options['silent']) || $dryrun;   
 $nolog        = isset($options['n']) || isset($options['nolog']);                 # --nolog
 $dryrun       = isset($options['d']) || isset($options['dry-run']);               # --dry-run
 $resumeOnly   = isset($options['r']) || isset($options['resume-only']);           # --resume-only
-$restrictList = $options['o'] ?: $options['only'] ?: NULL;                        # --only
+$restrictList = $options['o'] ?: $options['only'] ?: array();                     # --only
 $pull         = $options['p'] ?: $options['pull'] ?: NULL;                        # --pull
 $showFiltered = isset($options['f']) || isset($options['show-filtered']);         # --show-filtered
 $update       = isset($options['u']) || isset($options['update-self']);           # --update-self
 $makeRevFile  = $options['m'] ?: $options['make-revfile'] ?: NULL;                # --make-revfile
+$tags         = $options['t'] ?: $options['tagged-with'] ?: array();              # --tagged-with
 
-if ($restrictList) $restrictList = explode(' ', $restrictList);
-if ($makeRevFile)  $restrictList = array($makeRevFile);
+if (!empty($restrictList)) $restrictList = explode(' ', $restrictList);
+if (!empty($makeRevFile))  $restrictList = array($makeRevFile);
+if (!empty($tags)) $tags = explode(' ', $tags);
 
 # Make sure to add a command to this list.
 # If a command given isn't on this list, throw an error.
@@ -74,6 +76,7 @@ $commands = array(
   'f',
   'u',
   'm',
+  't',
   'setup',
   'clean',
   'list',
@@ -86,6 +89,7 @@ $commands = array(
   'show-filtered',
   'update-self',
   'make-revfile',
+  'tagged-with',
 );
 
 foreach ($commands as $command) unset($options[$command]);
@@ -130,7 +134,7 @@ try {
         throw new ExitApp("Setup complete.");
     }
 
-    $git->setConfigFile($restrictList);
+    $git->setConfigFile($restrictList, $tags);
     $git->setIgnoreFile();
 
     if ($list)                     $git->printAllStatuses($revision);
@@ -514,8 +518,9 @@ class Terra_Git {
      * Extract server settings from a configuration file.
      *
      * @param array restrictList  An optional list of servers to restrict deployment to.
+     * @param array tagList       An optional list of tags to restrict deployment to.
      */
-    public function setConfigFile($restrictList)
+    public function setConfigFile($restrictList = array(), $tagList = array())
     {
         $this->output("----------------------------------------", 2);
         $this->output("Initializing config values.");
@@ -537,7 +542,7 @@ class Terra_Git {
             throw new ExitApp("Config file '$config' is not a valid .ini file.");
         }
 
-        $this->addServers($serverList, $restrictList);
+        $this->addServers($serverList, $restrictList, $tagList);
     }
 
     /**
@@ -568,6 +573,11 @@ class Terra_Git {
                     ; Server identifier. Required.
                     ; You may specify more than one server, each with its own unique identifier and options.
                     [example]
+
+                    ; You can set keywords ('tags') for servers. That way you can tag some servers with
+                    'production' or 'development', for example, and only deploy to servers with the matching tags.
+                    tags[] = example
+                    tags[] = development
 
                     ; Whether to skip this configuration section.
                     ; This is only set to true for the example.
@@ -698,30 +708,63 @@ class Terra_Git {
      *
      * @param array serverList    An associative array of server identifiers to server configuration options.
      * @param array restrictList  A list of server identifiers to deploy. All others are excluded.
+     * @param array tagList       A list of server tags to deploy. All others are excluded.
      */
-    protected function addServers($serverList, $restrictList)
+    protected function addServers($serverList, $restrictList = array(), $tagList = array())
     {
-        $this->output("Fetching servers...", 2);
+        $this->output("Selecting servers...", 2);
 
-        if (!empty($restrictList)) {
-            $removeList = array_diff(array_keys($serverList), $restrictList);
+        $removeList = !empty($restrictList)
+          ? array_diff(array_keys($serverList), $restrictList)
+          : array();
 
-            foreach ($removeList as $server) {
-                $this->output("   " . "Skipping server with identifier \"$server\"");
-                unset($serverList[$server]);
+        if (!empty($tagList)) {
+            $filteredTags = preg_grep("/^!.*$/", $tagList);
+            $allowedTags  = array_diff($tagList, $filteredTags);
+            foreach ($filteredTags as $key => $tag) $filteredTags[$key] = ltrim($tag, '!');
+
+            foreach($serverList as $name => $server) {
+                $matches = array_intersect($allowedTags, $server['tags']);
+                $filteredMatches = array_intersect($filteredTags, $server['tags']);
+
+                if (count($matches) == 0 || count($filteredMatches) != 0) {
+                    $removeList[] = $name;
+                }
             }
         }
 
-        foreach ($serverList as $server => $options) {
-            $this->output("   " . "Adding server with identifier \"$server\"");
+        foreach (array_unique($removeList) as $name) {
+            $this->output("   " . "Skipping server with identifier \"$name\"", 2);
+            $this->output("   " . "Tags: ");
+
+            if (count($serverList[$name]['tags']) > 0) {
+                foreach($serverList[$name]['tags'] as $tag) $this->output("[$tag] ", 0);
+            } else {
+              $this->output("none");
+            }
+
+            unset($serverList[$name]);
+        }
+
+        if (count($serverList) == 0) throw new ExitApp("No servers selected for deployment.");
+
+        foreach ($serverList as $name => $server) {
+            $this->output("   " . "Adding server with identifier \"$name\"", 2);
+            $this->output("   " . "Tags: ");
+
+            if (count($server['tags']) > 0) {
+                foreach($server['tags'] as $tag) $this->output("[$tag] ", 0);
+            } else {
+              $this->output("none");
+            }
 
             # If the shortform syntax is used in the config file.
             if (@substr($server['short'], 0, 6) == 'ftp://') {
-                $options = array_merge($options, parse_url($server['short']));
+                $server = array_merge($server, parse_url($server['short']));
             }
 
             # Throw in some default values, in case they're not set.
-            $options = array_merge(array(
+            $server = array_merge(array(
                 'skip' => false,
                 'host' => '',
                 'user' => '',
@@ -729,19 +772,20 @@ class Terra_Git {
                 'port' => 21,
                 'path' => '/',
                 'passive' => true,
-                'clean_directories' => array()
-                    ), $options);
+                'clean_directories' => array(),
+                'tags' => array(),
+            ), $server);
 
             # This serves as an identifier for LOCAL_REVISION files.
-            $options['name'] = $server;
+            $server['name'] = $name;
 
             # Skip if configured, else assign to $this->serverList.
-            if ($options['skip']) {
+            if ($server['skip']) {
               $this->output("'skip' config value set to true.", 2);
-              $this->output("Skipping deployment to server with identifier {$server['name']}.");
+              $this->output("Skipping deployment to server with identifier $name}.");
               continue;
             }
-            $this->serverList[$server] = $options;
+            $this->serverList[$name] = $server;
         }
     }
 
