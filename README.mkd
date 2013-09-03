@@ -33,7 +33,7 @@ Super simple.
 
 And later, pushing changes is as easy as running `php git-deploy` once more. You're done!
 
-#### Configuration
+### Configuration
 The configuration progess is pretty simple and the default config file walks you through it. The only thing to note is that if you have your project deployed already and want to upload a new revision, you'll either have to clean the remote location first and upload from scratch, or upload a file named `REVISION` containing the SHA-1 hash of the currently uploaded revision. There's a convenience command to do this for you: First your server in `deploy-config.ini`, then run `php git-deploy --make-revfile=<identifier>`. You'll be prompted for the revision to set, and it'll be automatically uploaded for you.
 
 If you don't know what revision the server is on (but you know how many commits back it is from HEAD), running `git rev-parse --short HEAD~<number of commits back>` will return the SHA-1 hash for that commit, on the current branch. More on that [here](http://git-scm.com/book/ch6-1.html). In particular, check out [this section](http://git-scm.com/book/ch6-1.html#Ancestry-References) on ancestry references. The basic guideline is below:
@@ -41,7 +41,7 @@ If you don't know what revision the server is on (but you know how many commits 
 1. `HEAD~n` returns the ancestor of the current branch `n` number of steps back from `HEAD` on the current branch.
 2. `branch~n` is like `HEAD~n`, but it works relative the tip of `branch`.
 
-#### Ignoring Files
+### Ignoring Files
 After running `--setup` you'll notice a file called `.deployignore`. It works similarly to a `.gitignore` file, except that it excludes files from being uploaded (and it supports optional regex patters!). You'll find more information in the default file.
 
 Additional Usage:
@@ -70,7 +70,7 @@ If the configuration file is ever mangled or broken, removing it and re-running 
 
 Command line:
 -------------
-#### Syntax
+### Syntax
 The syntax isn't complicated.
 
     php git-deploy [<tree-ish>] [flags]
@@ -81,12 +81,12 @@ Make sure to specify the `[<tree-ish>'` command first, so it doesn't get parsed 
 
 ...which will clean the upload directory of the server identified by 'testserver' (as configured in `deploy-config.ini`) without logging or printing output.
 
-#### Flagless Arguments
+### Flagless Arguments
 
 `[<tree-ish>]`  
 Specify the revision to deploy. You can use any format recognizable by `git-diff` (hash, tag, etc). Defaults to HEAD of the current branch if not specified.  Note that files matching the following patterns will not be deployed for security reasons: `git-deploy*`, `.deploy/`, and a match for the script's curent name. (In case of rename.)
 
-#### Commands
+### Commands
 `--setup`  
 Run setup.
 
@@ -106,16 +106,16 @@ Pull contents down from the server specified with the given identifier into the 
 `--update-self`  
 Fetch a newer copy of this script if it exists on GitHub and update to it. This script will keep its name, so even if it isn't named `git-deploy` this command (like all the others) will still work.
 
-`-m=<identifier>`
-`--make-revfile=<identifier>`
+`-m=<identifier>`  
+`--make-revfile=<identifier>`  
 Uploads a REVISION file to the server with the configured identifier. This is basically only useful for first-time setup, where you might already have code uploaded but without a REVISION file to identify the currently deployed revision to git-deploy. In that case you can run `--make-revfile` and pass the identifier of the server you want to upload the REVISION file to. You'll be prompted during upload for the revision hash/tag/etc. to set.
 
 `-o=<identifier-list>`  
 `--only=<identifier-list>`  
 Only run git-deploy on the servers with the given identifiers in the config file. If more than one is specified, they should be enclosed in quote characters and space delineated.
 
-`-t=<taglist>`
-`--tagged-with=<taglist>`
+`-t=<taglist>`  
+`--tagged-with=<taglist>`  
 Deploys only to servers tagged with the given identifiers in `deploy-config.ini`. If more than one tag is specified, the list should be enclosed in quotes and space-delineated. A server only has to have one tag in the list in order to be deployed, but you can specifically exlude certain tags by prefixing the tag with an exclamation mark. __*Note that `--tagged-with` will not override `--only`. If both `--only` and `--tagged-with` are specified, a server must match both to be included.*__
 
 `-s`  
@@ -147,6 +147,6 @@ When you run a git deploy, git-deploy downloads the REVISION file, and checks to
 
 Suggestiongs, questions, and complaints.
 ----------------------------------------
-#### [Create an issue!](https://github.com/ConnorKrammer/git-deploy-php/issues)
+### [Create an issue!](https://github.com/ConnorKrammer/git-deploy-php/issues)
 
 Feel free to contribute! The source code is pretty clean and easy to go through, even if your PHP skills aren't that great. I've documented it more than strictly necessary for exactly that reason -- so get cracking! No pull request is too small.
