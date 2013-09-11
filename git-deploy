@@ -586,7 +586,7 @@ class Terra_Git {
 
                     ; Shortform. This declaration combines the username, password, host,
                     ; port, and path in one line.
-                    short: ftp://username:password@example.com:21/path/to/installation]
+                    short: ftp://username:password@example.com:21/path/to/installation
 
                     ; The FTP username to login as.
                     ; May be the same as your hosting or cPanel username.
@@ -1832,7 +1832,7 @@ class Terra_Git {
     }
 
     /**
-     * Outputs a message to the console and optionall logs it to a file.
+     * Outputs a message to the console and optionally logs it to a file.
      *
      * If $this->print is set to true, $message will be output to the command line.
      * Likewise, if $this->log is set to false, $message will be ouput to a log file.
