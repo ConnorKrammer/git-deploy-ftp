@@ -42,7 +42,7 @@ If you don't know what revision the server is on (but you know how many commits 
 2. `branch~n` is like `HEAD~n`, but it works relative the tip of `branch`.
 
 ### Ignoring Files
-After running `--setup` you'll notice a file called `.deployignore`. It works similarly to a `.gitignore` file, except that it excludes files from being uploaded (and it supports optional regex patters!). You'll find more information in the default file.
+After running `--setup` you'll notice a file called `.deployignore`. It works similarly to a `.gitignore` file, except that it excludes files from being uploaded (and it supports optional regex patterns!). You'll find more information in the default file.
 
 Additional Usage:
 ---------------
@@ -75,7 +75,7 @@ The syntax isn't complicated.
 
     php git-deploy [<tree-ish>] [flags]
 
-Make sure to specify the `[<tree-ish>'` command first, so it doesn't get parsed as an argument to one of the flags.
+Make sure to specify the `[<tree-ish>]` command first, so it doesn't get parsed as an argument to one of the flags.
 
     php git-deploy HEAD~1 -csn --only testserver
 
@@ -116,7 +116,7 @@ Only run git-deploy on the servers with the given identifiers in the config file
 
 `-t=<taglist>`  
 `--tagged-with=<taglist>`  
-Deploys only to servers tagged with the given identifiers in `deploy-config.ini`. If more than one tag is specified, the list should be enclosed in quotes and space-delineated. A server only has to have one tag in the list in order to be deployed, but you can specifically exlude certain tags by prefixing the tag with an exclamation mark. __*Note that `--tagged-with` will not override `--only`. If both `--only` and `--tagged-with` are specified, a server must match both to be included.*__
+Deploys only to servers tagged with the given identifiers in `deploy-config.ini`. If more than one tag is specified, the list should be enclosed in quotes and space-delineated. A server only has to have one tag in the list in order to be deployed, but you can specifically exlude certain tags by prefixing the tag with an exclamation mark. ***Note that `--tagged-with` will not override `--only`. If both `--only` and `--tagged-with` are specified, a server must match both to be included.***
 
 `-s`  
 `--silent`  
